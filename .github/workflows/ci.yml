@@ -20,7 +20,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # Pinned exactly: astral-sh/setup-uv has no rolling v10 tag/branch since v8.
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.12"
       - name: Install locked dependencies
@@ -39,6 +40,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Ruff (version pinned by required-version in pyproject.toml)
         run: uvx ruff@0.16.9 check .
