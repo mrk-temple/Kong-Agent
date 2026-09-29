@@ -1,0 +1,59 @@
+# Copy to kong.local.toml. Keys are read only from the named environment variable.
+# Model names below are examples: use a model ID actually available at your service.
+default_profile = "deepseek"
+
+[profiles.deepseek]
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"
+json_mode = true
+timeout = 90
+max_tokens = 4096
+# Configure the actual provider context window. Input uses a conservative byte
+# estimate; output reservation follows max_tokens. This is not auto-detection.
+context_window_tokens = 65536
+
+[profiles.relay]
+base_url = "https://your-relay.example/v1"
+model = "your-model-id"
+api_key_env = "KONG_API_KEY"
+json_mode = true
+# Optional provider-specific switch (supported by SiliconFlow); omitted by default.
+# enable_thinking = false
+
+[profiles.local]
+base_url = "http://localhost:11434/v1"
+model = "your-local-model-id"
+api_key_env = "KONG_LOCAL_API_KEY"
+json_mode = true
+timeout = 180
+
+[profiles.lmstudio]
+base_url = "http://localhost:1234/v1"
+model = "your-loaded-model-id"
+api_key_env = "KONG_LOCAL_API_KEY"
+json_mode = true
+
+# Independent of the model profile. No web requests occur in disabled/cached mode.
+[web]
+mode = "disabled" # disabled | cached | live
+provider = "none" # none | brave | tavily
+# Set to BRAVE_SEARCH_API_KEY or TAVILY_API_KEY when selecting that provider.
+# Omit this field to use the provider's default environment-variable name.
+timeout = 20
+cache_ttl_seconds = 300
+max_response_bytes = 2000000
+# Explicit trusted proxy for networks using fake-IP DNS. No automatic proxy discovery.
+# The proxy is responsible for final DNS/destination policy. Omit for direct pinned DNS.
+# proxy_url = "http://127.0.0.1:7890"
+# Optional MCP, enabled only with --allow-mcp. Use an absolute executable/script path when needed.
+# [mcp.servers.local_demo]
+# command = "python"
+# args = ["C:/path/to/Kong-Agent/examples/mcp_demo_server.py"]
+# env_names = []
+#
+# [mcp.servers.remote]
+# transport = "http"
+# url = "https://your-server.example/mcp"
+# header_env = { Authorization = "YOUR_MCP_AUTH_HEADER" }
+# The environment value must contain the complete header, e.g. Bearer ...; no plaintext keys in TOML.

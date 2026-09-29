@@ -1,0 +1,16 @@
+{
+  "goal": "整理当前项目资料，生成一份项目介绍",
+  "rationale": "先理解项目边界，再形成可核验的介绍文档。",
+  "steps": [
+    {"id": "understand", "title": "识别项目职责、依赖与使用入口"},
+    {"id": "document", "title": "编写并核验项目介绍"}
+  ],
+  "success_criteria": [
+    {
+      "id": "introduction",
+      "description": "生成项目介绍文件",
+      "kind": "file_exists",
+      "path": "PROJECT_INTRO.md"
+    }
+  ]
+}

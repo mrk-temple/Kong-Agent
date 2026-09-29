@@ -1,0 +1,9 @@
+[
+  {
+    "id": "hello_contents",
+    "description": "hello.txt 包含 Hello Kong",
+    "kind": "file_contains",
+    "path": "hello.txt",
+    "contains": "Hello Kong"
+  }
+]

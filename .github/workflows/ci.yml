@@ -1,0 +1,44 @@
+# Offline test and lint only: no model API keys, no --live evaluation.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-extras --python 3.12
+      - name: Install Playwright Chromium (Linux)
+        if: runner.os == 'Linux'
+        run: uv run --no-sync playwright install --with-deps chromium
+      - name: Install Playwright Chromium (Windows)
+        if: runner.os == 'Windows'
+        run: uv run --no-sync playwright install chromium
+      - name: Run tests
+        run: uv run --no-sync pytest -q -r s
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Ruff (version pinned by required-version in pyproject.toml)
+        run: uvx ruff@0.16.9 check .
