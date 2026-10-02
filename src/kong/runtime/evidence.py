@@ -134,6 +134,6 @@ def fresh(criterion, history, index, workspace, state):
         saved = observation.artifact_versions.get(path)
         if saved is None or saved != fingerprint(workspace, path):
             return False
-        if observation.effect != "read" and observation.artifact_versions_before.get(path) != saved:
-            return False  # A command that changed the artifact is not its final verification.
+        if observation.artifact_versions_before.get(path) != saved:
+            return False  # A concurrent change during even a read prevents stable version binding.
     return True

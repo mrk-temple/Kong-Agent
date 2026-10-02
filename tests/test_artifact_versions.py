@@ -89,6 +89,39 @@ def test_unknown_effect_and_unfinished_intent_require_reverification(tmp_path):
     asyncio.run(scenario())
 
 
+def test_external_change_during_real_read_cannot_bind_old_output_to_new_version(tmp_path):
+    async def scenario():
+        runtime = runtime_for(tmp_path)
+        runtime.state.success_criteria = [Criterion(id="read", description="Read current artifact", kind="tool_success",
+            tool_name="read_file", artifact_paths=["artifact.txt"])]
+        tool = runtime.registry.get("read_file")
+        original = tool.run
+        read_finished, changed = asyncio.Event(), asyncio.Event()
+        async def delayed_read(**arguments):
+            result = await original(**arguments)
+            read_finished.set()
+            await changed.wait()
+            return result
+        async def external_writer():
+            await read_finished.wait()
+            (tmp_path / "artifact.txt").write_text("bad")
+            changed.set()
+        tool.run = delayed_read
+        writer = asyncio.create_task(external_writer())
+        try:
+            await runtime._actions(Act(actions=[Action(name="read_file", arguments={"path":"artifact.txt"})]))
+            await writer
+            assert runtime.history.observations[-1].success
+            assert "good" in str(runtime.history.observations[-1].output)
+            assert problems(runtime)
+            tool.run = original
+            await runtime._actions(Act(actions=[Action(name="read_file", arguments={"path":"artifact.txt"})]))
+            assert not problems(runtime)
+        finally:
+            await runtime.registry.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("kind", ["tool_success", "tool_result", "evidence"])
 def test_default_current_criteria_cannot_bypass_version_binding(tmp_path, kind):
     async def scenario():

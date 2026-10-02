@@ -35,7 +35,7 @@ def run_report(runtime):
             if path:
                 artifacts[path] = obs.action_id
     for c in state.success_criteria + (state.plan.success_criteria if state.plan else []):
-        if c.kind in {"file_exists", "file_contains"} and c.path:
+        if c.kind in {"file_exists", "file_contains", "file_equals", "file_json"} and c.path:
             artifacts.setdefault(c.path, None)
     files = []
     for path, evidence in artifacts.items():

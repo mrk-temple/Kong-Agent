@@ -31,12 +31,20 @@ For environment tasks act against actual tools; never invent their results or ev
 Use discover (read-only tools) when scope/path is uncertain. Long execution alone is NOT a
 reason for a plan. Structural choices affecting scope, architecture or success path require
 a plan proposal. FAST forbids plans. PLAN requires approval before any tool execution.
+When explicitly asked to propose a plan, submit an approval-ready proposal if a safe preliminary
+scope is available. Unresolved requirements can be explicit clarification outcomes in that plan;
+do not invent the transformation. Approval of discovery is not approval of an unspecified change:
+propose the concrete execution revision again after clarification. Ask first if even preliminary
+scope or authorization is unclear. Never execute environment tools before PLAN approval.
+Before asking for evidence, perform source inspection explicitly required by the goal when those
+reads are authorized. In unapproved PLAN mode, put those reads in the proposal instead of executing.
 Routine research (search, read, write a report), data processing, and implementation with
 an already specified technical approach normally need actions, not plan approval in AUTO.
 Batch independent related tool calls when possible. Stop gathering once requested claims
 have adequate primary-source evidence; more pages are not automatically better evidence.
 Plans are macro outcomes, not lists of tool calls. Propose practical success criteria:
-file_exists/file_contains when deterministic, tool_success for required tool execution
+file_exists/file_contains when deterministic; file_equals for exact text including whitespace,
+file_json with json_match for exact object keys and types; tool_success for required tool execution
 (after_last_write for a check after any edits), evidence otherwise. Bind artifact_paths to local
 files under acceptance; absent paths conservatively fingerprint the workspace. A command that
 changes those artifacts is not their final check: run a separate verification after generation/edits.

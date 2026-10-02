@@ -37,6 +37,7 @@ CASE_SETS = {"legacy12": CASES, "legacy12_a3": CASES,
              "legacy12_contracts": CASES,
              "variation16": VARIATION_CASES, "variation16_handoff": VARIATION_CASES,
              "variation16_v2": VARIATION_CASES, "plan3": PLAN_CASES}
+CASE_SETS["variation16_contracts"] = VARIATION_CASES
 
 
 def sha256_file(path: Path) -> str:
@@ -117,6 +118,18 @@ class MeteredModel(CompatibleModel):
 
 
 def _criteria(case: Case, task_set="legacy12"):
+    if task_set == "variation16_contracts":
+        result = _criteria(case, "variation16_v2")
+        if case.category == "recovery_v04":
+            contract = CONTRACTS[case.id]
+            if case.id == "v04_recover_invalid":
+                expected = json.dumps(json.loads(case.files["canonical.json"])["value"])
+            else:
+                source = "instructions.txt" if case.id == "v04_recover_missing" else "recipe.txt"
+                expected = case.files[source].split("=", 1)[1].strip()
+            result.append(Criterion(id="exact_recovered_value", description="Declared recovered value contract; expected value visible",
+                kind="file_equals", path=contract.artifact, expected_text=expected))
+        return result
     if task_set == "legacy12_contracts":
         result = _criteria(case, "legacy12_a3")
         if case.id == "source_tomllib":
@@ -354,7 +367,7 @@ async def _trial(case: Case, repeat: int, folder: Path, *, fixture: bool, config
                           fixture_model("plan_approval" if case.category == "approval" else case.id))
                          if fixture else MeteredModel(config, client))
                 if case.id in CONTRACTS and CONTRACTS[case.id].continuation:
-                    if task_set in {"variation16_handoff", "variation16_v2"}:
+                    if task_set in {"variation16_handoff", "variation16_v2", "variation16_contracts"}:
                         prior_model = ScriptedModel([
                             Act(actions=[Action(name="read_file", arguments={"path":"handoff.md"})]),
                             Act(actions=[Action(name="process_exec", arguments={"argv":["python","check.py"]})]),
@@ -395,8 +408,8 @@ async def _trial(case: Case, repeat: int, folder: Path, *, fixture: bool, config
                     runtime.save()
             stage = "external_verifier"
             checks = (await verify_variation(case, workspace_path, runtime, hashes, sha256_file, prior_run_id=prior_run_id,
-                                              prior_protocol="executed" if task_set in {"variation16_handoff", "variation16_v2"} else "seeded",
-                                              readback_policy="protected_check" if task_set == "variation16_v2" else "direct")
+                                              prior_protocol="executed" if task_set in {"variation16_handoff", "variation16_v2", "variation16_contracts"} else "seeded",
+                                              readback_policy="protected_check" if task_set in {"variation16_v2", "variation16_contracts"} else "direct")
                       if case.id in CONTRACTS else await verify(case, workspace_path, runtime, hashes, sha256_file))
     except Exception as exc:
         environment_error = "harness_exception:" + type(exc).__name__
@@ -493,9 +506,9 @@ async def run_suite(output: Path, *, case_ids: list[str] | None = None, repetiti
     manifest_data = {"schema":EVAL_SCHEMA, "kong_version":kong.__version__, "mode":mode,
                      "task_set":task_set, "python":platform.python_version(), "platform":platform.system(),
                      "platform_release":platform.release(), "platform_machine":platform.machine(),
-                     "continuation_protocol":("executed_failed_check_then_waiting_user" if task_set in {"variation16_handoff", "variation16_v2"}
+                     "continuation_protocol":("executed_failed_check_then_waiting_user" if task_set in {"variation16_handoff", "variation16_v2", "variation16_contracts"}
                                                else "synthetic_completed_handoff" if task_set == "variation16" else None),
-                     "readback_policy":"protected_check" if task_set == "variation16_v2" else "direct",
+                     "readback_policy":"protected_check" if task_set in {"variation16_v2", "variation16_contracts"} else "direct",
                      "configuration":config_public, "cases":[manifest(case) for case in selected],
                      "runtime_criteria":{case.id:[c.model_dump(mode="json") for c in _criteria(case, task_set)] for case in selected},
                      "repetitions":repetitions, "behavior_resources":resources,
