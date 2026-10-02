@@ -4,6 +4,27 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic_core import PydanticCustomError
+
+
+INVARIANT_MESSAGES = {
+    "criterion_event_artifact_conflict": "Historical event evidence cannot certify current artifacts",
+    "criterion_missing_path": "File criteria require path",
+    "criterion_missing_contains": "file_contains requires nonempty contains",
+    "criterion_missing_expected": "file_equals requires expected_text; file_json requires json_match",
+    "criterion_file_filters_kind": "expected_text only applies to file_equals; json_match only applies to file_json",
+    "criterion_missing_tool": "Tool criteria require tool_name",
+    "criterion_after_write_kind": "after_last_write only applies to tool criteria",
+    "criterion_result_filters_kind": "Result filters require kind=tool_result; omit them for other kinds",
+    "criterion_missing_result_match": "tool_result requires output_match or output_contains",
+    "criterion_empty_operation": "Omit operation or supply a nonempty operation name",
+    "criterion_invalid_pointer": "output_contains requires JSON Pointer keys and nonempty strings",
+    "plan_duplicate_ids": "IDs must be unique within steps and within criteria",
+}
+
+
+def invariant_error(code):
+    return PydanticCustomError(code, INVARIANT_MESSAGES[code])
 
 
 class Contract(BaseModel):
@@ -43,12 +64,20 @@ class Status(StrEnum):
 class Criterion(Contract):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    kind: Literal["evidence", "file_exists", "file_contains", "tool_success", "tool_result"] = "evidence"
+    kind: Literal["evidence", "file_exists", "file_contains", "file_equals", "file_json", "tool_success", "tool_result"] = "evidence"
     path: str | None = None
     contains: str | None = None
+    expected_text: str | None = Field(default=None, max_length=1_000_000,
+        description="file_equals only: exact UTF-8 text, including whitespace; empty string is allowed.")
+    json_match: dict[str, Any] | None = Field(default=None,
+        description="file_json only: exact JSON object, including keys and value types; whitespace is ignored.")
     tool_name: str | None = None
-    after_last_write: bool = False
-    operation: str | None = None
+    after_last_write: bool = Field(default=False, description="Only for tool_success/tool_result. Omit or false for other kinds.")
+    evidence_scope: Literal["current", "event"] = Field(default="current",
+        description="current verifies current artifacts/resource state; event only proves a past operation happened.")
+    artifact_paths: list[str] = Field(default_factory=list, max_length=100,
+        description="Local files whose current versions must match the verification; empty uses the workspace.")
+    operation: str | None = Field(default=None, description="Only for tool_result. Omit or null for other kinds; never use an empty string.")
     arguments_match: dict[str, Any] = Field(default_factory=dict)
     output_match: dict[str, Any] = Field(default_factory=dict)
     output_contains: dict[str, str] = Field(default_factory=dict,
@@ -56,22 +85,28 @@ class Criterion(Contract):
 
     @model_validator(mode="after")
     def check_verifier(self):
-        if self.kind in {"file_exists", "file_contains"} and not self.path:
-            raise ValueError("file criteria require path")
+        if self.evidence_scope == "event" and (self.after_last_write or self.artifact_paths):
+            raise invariant_error("criterion_event_artifact_conflict")
+        if self.kind in {"file_exists", "file_contains", "file_equals", "file_json"} and not self.path:
+            raise invariant_error("criterion_missing_path")
         if self.kind == "file_contains" and not self.contains:
-            raise ValueError("file_contains requires nonempty contains")
+            raise invariant_error("criterion_missing_contains")
+        if self.kind == "file_equals" and self.expected_text is None or self.kind == "file_json" and self.json_match is None:
+            raise invariant_error("criterion_missing_expected")
+        if self.expected_text is not None and self.kind != "file_equals" or self.json_match is not None and self.kind != "file_json":
+            raise invariant_error("criterion_file_filters_kind")
         if self.kind in {"tool_success", "tool_result"} and not self.tool_name:
-            raise ValueError("tool criteria require tool_name")
+            raise invariant_error("criterion_missing_tool")
         if self.after_last_write and self.kind not in {"tool_success", "tool_result"}:
-            raise ValueError("after_last_write only applies to tool criteria")
+            raise invariant_error("criterion_after_write_kind")
         if self.kind != "tool_result" and (self.operation is not None or self.arguments_match or self.output_match or self.output_contains):
-            raise ValueError("result filters require kind=tool_result")
+            raise invariant_error("criterion_result_filters_kind")
         if self.kind == "tool_result" and not (self.output_match or self.output_contains):
-            raise ValueError("tool_result requires output_match or output_contains")
+            raise invariant_error("criterion_missing_result_match")
         if self.operation == "":
-            raise ValueError("operation cannot be empty")
+            raise invariant_error("criterion_empty_operation")
         if any(not key.startswith("/") or not value for key, value in self.output_contains.items()):
-            raise ValueError("output_contains requires JSON Pointer keys and nonempty strings")
+            raise invariant_error("criterion_invalid_pointer")
         return self
 
 
@@ -103,7 +138,7 @@ class Plan(Contract):
     def unique_ids(self):
         for items in (self.steps, self.success_criteria):
             if len({item.id for item in items}) != len(items):
-                raise ValueError("IDs must be unique within steps / criteria")
+                raise invariant_error("plan_duplicate_ids")
         return self
 
 
@@ -207,6 +242,10 @@ class Observation(Contract):
     error: str | None = None
     fingerprint: str
     output_hash: str
+    evidence_version: Literal[1, 2] = 1
+    artifact_versions: dict[str, str | None] = Field(default_factory=dict)
+    artifact_versions_before: dict[str, str | None] = Field(default_factory=dict)
+    effect: Literal["read", "mutation", "unknown"] = "unknown"
 
 
 class Event(Contract):

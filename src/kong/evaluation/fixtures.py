@@ -105,6 +105,22 @@ def fixture_model(case_id: str) -> ScriptedModel:
     return ScriptedModel(decisions)
 
 
+_LEGACY_DATA_CHECKS = {
+    "data_paid_product": "import csv;f=open('summary.csv',newline='',encoding='utf-8');r=list(csv.DictReader(f));f.close();assert r==[{'product':'Apple','quantity':'5','revenue':'5.50'},{'product':'Pear','quantity':'2','revenue':'4.70'}]",
+    "data_region": "import csv;f=open('summary.csv',newline='',encoding='utf-8');r=list(csv.DictReader(f));f.close();assert r==[{'region':'East','quantity':'5','revenue':'3.10'},{'region':'West','quantity':'1','revenue':'3.10'}]",
+    "data_refunds": "import csv;f=open('summary.csv',newline='',encoding='utf-8');r=list(csv.DictReader(f));f.close();assert r==[{'product':'A','net_revenue':'8.15'},{'product':'B','net_revenue':'5.75'}]",
+}
+
+
+def legacy_a3_fixture_model(case_id: str) -> ScriptedModel:
+    """New comparison group: check a stable artifact after data generation."""
+    old = fixture_model(case_id)
+    decisions = list(old.decisions)
+    if case_id in _LEGACY_DATA_CHECKS:
+        decisions.insert(-1, _act("process_exec", argv=["python", "-c", _LEGACY_DATA_CHECKS[case_id]]))
+    return ScriptedModel(decisions)
+
+
 class FixtureTerminal(Tool):
     name = "terminal"
     description = "Simulated terminal for offline harness verification."

@@ -22,14 +22,19 @@ def export(suite: Path, output: Path):
         trial = json.loads(path.read_text(encoding="utf-8"))
         allowed = ("case", "category", "repetition", "mode", "fixture_simulations", "score_scope", "status",
                    "runtime_status", "error_completion", "checks", "model_calls", "turns", "call_records", "usage",
-                   "elapsed_seconds", "human_intervention", "protected_hashes", "usage_complete", "failed_tools", "model_errors", "implementation_sha256")
+                   "elapsed_seconds", "human_intervention", "protected_hashes", "usage_complete", "failed_tools", "model_errors", "implementation_sha256",
+                   "task_set", "resource_fingerprint", "prior_seed_calls")
         item = {key:trial[key] for key in allowed if key in trial}
         item["failed_checks"] = [name for name, value in trial["checks"].items() if not value]
         item["raw_result_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         # Keep error categories, not free-form tool error text or model-generated prose.
         item["failure_category"] = str(trial.get("failure_reason") or "").split(":",1)[0] or None
         item["artifacts"] = []
-        for name in ("summary.csv", "process.py", "calc.py", "research.json", "answer.txt", "result.txt", "saved.json", "proof.png"):
+        names = [a["path"] for a in trial.get("artifacts", [])] or ["summary.csv", "process.py", "calc.py", "research.json", "answer.txt", "result.txt", "saved.json", "proof.png"]
+        for name in names:
+            relative = Path(name)
+            if relative.is_absolute() or ".." in relative.parts or "\\" in name or ":" in name:
+                raise ValueError("Invalid artifact identifier")
             artifact = path.parent / "workspace" / name
             if artifact.is_file() and not artifact.is_symlink() and artifact.resolve().is_relative_to((path.parent / "workspace").resolve()):
                 item["artifacts"].append({"path":name,"bytes":artifact.stat().st_size,

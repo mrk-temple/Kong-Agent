@@ -12,6 +12,7 @@ from kong.context import Context
 from kong.continuity.contracts import ContextPacket
 from kong.contracts import DECISION_ADAPTER, Decision
 from kong.models.base import ModelError, ModelProtocolError
+from kong.models.diagnostics import protocol_diagnostics
 
 
 class CompatibleModel:
@@ -83,6 +84,6 @@ class CompatibleModel:
             self._memory_proposal = proposal
             return decision
         except (ValueError, KeyError, IndexError, TypeError, ValidationError) as exc:
-            # Error codes only: Pydantic messages/inputs can echo arbitrary content.
-            detail = ",".join(sorted({e["type"] for e in exc.errors()})) if isinstance(exc, ValidationError) else type(exc).__name__
-            raise ModelProtocolError(f"Invalid Kong decision JSON ({detail}). Return exactly one decision matching the supplied schema, without extra fields.") from None
+            diagnostics = protocol_diagnostics(exc)
+            detail = ", ".join(d["path"] + ":" + d["code"] + ("; " + d["hint"] if "hint" in d else "") for d in diagnostics)
+            raise ModelProtocolError(f"Invalid Kong decision JSON ({detail}). Return exactly one decision matching the supplied schema, without extra fields.", diagnostics) from None

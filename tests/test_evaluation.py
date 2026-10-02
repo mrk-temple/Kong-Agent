@@ -105,7 +105,7 @@ def test_timeout_and_environment_error_are_distinct():
 
 def test_browser_accepts_url_read_after_start_but_before_open(tmp_path):
     from kong.storage import RunStore
-    root, summary = asyncio.run(run_suite(tmp_path,case_ids=["browser_form"],repetitions=1))
+    root, summary = asyncio.run(run_suite(tmp_path,case_ids=["browser_form"],repetitions=1,task_set="legacy12_a3"))
     result_path = Path(summary["results"][0]["result"])
     result = json.loads(result_path.read_text())
     workspace = result_path.parent / "workspace"

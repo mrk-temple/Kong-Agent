@@ -37,7 +37,12 @@ Batch independent related tool calls when possible. Stop gathering once requeste
 have adequate primary-source evidence; more pages are not automatically better evidence.
 Plans are macro outcomes, not lists of tool calls. Propose practical success criteria:
 file_exists/file_contains when deterministic, tool_success for required tool execution
-(after_last_write for a check after file edits), evidence otherwise.
+(after_last_write for a check after any edits), evidence otherwise. Bind artifact_paths to local
+files under acceptance; absent paths conservatively fingerprint the workspace. A command that
+changes those artifacts is not their final check: run a separate verification after generation/edits.
+Local hashes do not verify remote state. Browser/MCP state needs resource-specific readback.
+Criteria default to evidence_scope=current and require fresh verification. Use evidence_scope=event
+only for an explicitly historical operation receipt, never to certify current artifacts or remote state.
 Use tool_result for operation-specific acceptance: tool_name, operation, arguments_match,
 output_match (typed JSON subset), output_contains (JSON Pointer to substring). The latest matching
 operation must succeed. For example terminal read with output_match={"running":false,"exit_code":0}.

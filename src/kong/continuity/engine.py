@@ -10,7 +10,7 @@ from kong.contracts import History, RunState
 from kong.tools.base import ToolDefinition
 from kong.continuity.compiler import BudgetManager, ContextPlanner, ContextRenderer, item, memory_protocol
 from kong.continuity.compaction import Compactor, observation_digests
-from kong.continuity.memory import ExplicitExtractor, PromotionPolicy, ThreadMemoryManager, source_for, stable_id
+from kong.continuity.memory import ExplicitExtractor, PromotionPolicy, ThreadMemoryManager, source_for, stable_id, usable_memory
 from kong.continuity.memory_contracts import ContinuityPolicy, MemoryDelta, MemoryScope, MemoryStatus, RankingConfig
 from kong.continuity.memory_store import MemoryStore, lexical_terms
 from kong.continuity.retrieval import MemoryRetriever, SQLiteMemoryRetriever
@@ -234,7 +234,7 @@ class ContextEngine:
                     else:
                         delta = self.extractor.extract(self.thread.thread_id, snapshot.state.run_id, prefix, index, revision)
                         if delta.mutations:
-                            self.manager.merge(delta, current)
+                            self.manager.merge(delta, current, explicit=True)
                 except (ValueError, OSError) as exc:
                     self.audit(snapshot.state.run_id, "memory_replay_rejected", event_index=index, error=type(exc).__name__)
             self.store.set_cursor(snapshot.state.run_id, len(history.events))
@@ -246,7 +246,7 @@ class ContextEngine:
         if start < len(history.events):
             revision = self.store.state(thread.thread_id).revision
             delta = self.extractor.extract(thread.thread_id, state.run_id, history, start, revision)
-            self.manager.merge(delta, (state.run_id, history))
+            self.manager.merge(delta, (state.run_id, history), explicit=True)
         thread_state = self.store.state(thread.thread_id)
         promotion = PromotionPolicy()
         for thread_item in thread_state.items:
@@ -257,8 +257,12 @@ class ContextEngine:
         # Propagate supersession/resolution so old promoted facts cannot remain
         # active after their source ThreadItem was corrected or rejected.
         statuses = {i.id: i.status for i in thread_state.items}
+        expirations = {i.id: i.expires_at for i in thread_state.items if i.expires_at}
         for store in {s.path: s for s in [self.store, self.long_term_store]}.values():
             for record in store.memories():
+                if record.thread_item_id in expirations and record.expires_at != expirations[record.thread_item_id]:
+                    record.expires_at = expirations[record.thread_item_id]
+                    store.save_memory(record)
                 status = statuses.get(record.thread_item_id)
                 if status in {MemoryStatus.SUPERSEDED, MemoryStatus.RESOLVED, MemoryStatus.REJECTED} and record.status != status:
                     record.status = status
@@ -342,10 +346,10 @@ class ContextEngine:
                 return (self.ranking.entity_overlap * len(terms & set(lexical_terms(entry.content)))
                         + self.ranking.importance * entry.importance
                         + self.ranking.unresolved * (entry.kind == "open_loop"))
-            thread_items = sorted((i for i in thread_state.items if i.status == MemoryStatus.ACTIVE), key=rank, reverse=True)[:self.policy.thread_item_limit]
+            thread_items = sorted((i for i in thread_state.items if usable_memory(i)), key=rank, reverse=True)[:self.policy.thread_item_limit]
             for entry in thread_items:
                 items.append(item("thread_memory", "THREAD MEMORY (derived):\n" + entry.model_dump_json(),
-                                  1 if entry.kind == "constraint" else 3, entry.sources))
+                                  1 if entry.kind in {"constraint", "fact", "preference"} else 3, entry.sources))
             episodes = sorted(self.store.episodes(thread.thread_id), key=lambda e: len(terms & set(lexical_terms(e.summary))), reverse=True)[:self.policy.episode_limit]
             for episode in episodes:
                 # Avoid resurrecting a compacted, now superseded statement as a

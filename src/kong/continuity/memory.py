@@ -3,12 +3,13 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from datetime import datetime, timezone
 from typing import Protocol
 
 from kong.continuity.contracts import ContextSource, Thread, now
 from kong.continuity.memory_contracts import (
     MemoryCandidate, MemoryDelta, MemoryKind, MemoryMutation, MemoryRecord,
-    MemoryScope, MemoryStatus, ThreadItem, ThreadState,
+    MemoryScope, MemoryStatus, ThreadItem, ThreadState, SourceExcerpt,
 )
 from kong.continuity.memory_store import MemoryStore
 from kong.contracts import History
@@ -19,9 +20,31 @@ def stable_id(*parts) -> str:
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:32]
 
 
+def preference_subject(text: str, *, negative=False):
+    pattern = (r"(?:I no longer prefer\s+|我不再(?:喜欢|偏好))(.+)" if negative else
+               r"(?:I prefer\s+|我(?:喜欢|偏好))(.+)")
+    match = re.fullmatch(pattern, text.strip(), re.I)
+    return match.group(1).strip().rstrip(".!。！").casefold() if match else None
+
+
 def source_for(thread_id: str, run_id: str, index: int) -> ContextSource:
     return ContextSource(kind="event", thread_id=thread_id, run_id=run_id, event_index=index,
                          event_id=f"{run_id}:event:{index}", path=f"history.events[{index}]")
+
+
+def usable_memory(item) -> bool:
+    """Support describes provenance/confirmation, never objective truth."""
+    if item.status != MemoryStatus.ACTIVE:
+        return False
+    if item.content_support == "unverified" and not item.confirmed_by:
+        return False
+    expires = getattr(item, "expires_at", None)
+    if expires:
+        try:
+            return datetime.fromisoformat(expires) > datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            return False
+    return True
 
 
 class DeltaExtractor(Protocol):
@@ -52,6 +75,8 @@ class ExplicitExtractor:
                 key, kind = "user.response_language", "preference"
             elif re.match(r"(?:你好[，,！!\s]*)?(?:我叫|我是|我的名字是)|my name is\b", text, re.I):
                 key = "user.self_identification"
+            elif preference_subject(text, negative=True):
+                key, kind = "preference." + stable_id(text), "preference"
             elif re.match(r"(?:我喜欢|我偏好|I prefer\b)", text, re.I) and not re.search(r"这次|这封|这一个|this time|for this", text, re.I):
                 key, kind = "preference." + stable_id(text), "preference"
             elif text.startswith(("决定：", "决定:", "Decision:")):
@@ -62,7 +87,8 @@ class ExplicitExtractor:
                 key, kind = "open." + stable_id(text), "open_loop"
             if key:
                 mutations.append(MemoryMutation(key=key, kind=kind, content=content,
-                                                importance=0.8, confidence=0.95, sources=[source]))
+                                                importance=0.8, confidence=0.95, sources=[source],
+                                                source_excerpts=[SourceExcerpt(event_id=source.event_id, text=content)]))
         return MemoryDelta(id=stable_id(thread_id, run_id, start, len(history.events), "explicit"),
                            thread_id=thread_id, base_revision=revision, mutations=mutations[:100])
 
@@ -90,7 +116,7 @@ class ThreadMemoryManager:
         source.snapshot_path = str(self.runs.path(source.run_id))
         return history.events[source.event_index]
 
-    def merge(self, delta: MemoryDelta, current: tuple[str, History] | None = None) -> ThreadState:
+    def merge(self, delta: MemoryDelta, current: tuple[str, History] | None = None, *, explicit: bool = False) -> ThreadState:
         state = self.store.state(delta.thread_id)
         if self.store.applied(delta.id, delta.thread_id):
             return state
@@ -99,6 +125,22 @@ class ThreadMemoryManager:
         # Validate the entire batch before changing any persisted derived state.
         for mutation in delta.mutations:
             events = [self.event(s, delta.thread_id, current) for s in mutation.sources]
+            source_text = {s.event_id: e.payload.get("text", "") if e.type == "human" else
+                           json.dumps(e.payload.get("observation", {}), ensure_ascii=False)
+                           for s, e in zip(mutation.sources, events)}
+            if any(excerpt.event_id not in source_text or excerpt.text not in source_text[excerpt.event_id]
+                   for excerpt in mutation.source_excerpts):
+                raise ValueError("Source excerpt does not match the cited event")
+            if not mutation.source_excerpts:
+                # Compatibility for old proposals: preserve real source text for
+                # review without claiming it semantically supports the proposal.
+                mutation.source_excerpts = [SourceExcerpt(event_id=event_id, text=text[:6000])
+                                            for event_id, text in source_text.items() if text][:100]
+                if mutation.operation in {"add", "update", "supersede"} and not mutation.source_excerpts:
+                    raise ValueError("Memory proposal requires reviewable source text")
+            if explicit and not any(e.type == "human" and mutation.content == e.payload.get("text", "").strip()
+                                    for e in events):
+                raise ValueError("Explicit extraction must preserve the user statement")
             if mutation.kind != "artifact" and not any(e.type == "human" for e in events):
                 raise ValueError("Facts/preferences/decisions require a user source")
             if mutation.kind == "artifact" and not any(e.type == "human" or (
@@ -121,18 +163,22 @@ class ThreadMemoryManager:
             if mutation.target_id and (target is None or target.key != mutation.key or target.kind != mutation.kind):
                 raise ValueError("Unknown or mismatched mutation target")
             if mutation.operation in {"resolve", "reject"}:
-                if target.kind == "decision" and target.confirmed_by:
-                    authorization = [self.event(s, delta.thread_id, current) for s in mutation.sources]
-                    if not any(e.type == "human" and e.payload.get("command") in {"memory_reject", "memory_forget", "memory_resolve"}
-                               and e.payload.get("item_id") == target.id
-                               for e in authorization):
-                        raise ValueError("Confirmed decisions require an explicit memory management command")
+                authorization = [self.event(s, delta.thread_id, current) for s in mutation.sources]
+                if not any(e.type == "human" and e.payload.get("command") in {"memory_reject", "memory_forget", "memory_resolve"}
+                           and e.payload.get("item_id") == target.id for e in authorization):
+                    raise ValueError("Removing memory requires an explicit memory management command")
                 target.status = MemoryStatus.RESOLVED if mutation.operation == "resolve" else MemoryStatus.REJECTED
                 target.sources = list({s.event_id: s for s in target.sources + mutation.sources}.values())
                 target.updated_at = now()
                 continue
             existing = [i for i in state.items if i.key == mutation.key
                         and i.status in {MemoryStatus.ACTIVE, MemoryStatus.CANDIDATE}]
+            subject = ((preference_subject(mutation.content, negative=True) or preference_subject(mutation.content))
+                       if explicit and mutation.kind == "preference" else None)
+            if subject:
+                existing += [i for i in state.items if i not in existing and i.kind == "preference"
+                             and i.status in {MemoryStatus.ACTIVE, MemoryStatus.CANDIDATE}
+                             and (preference_subject(i.content) or preference_subject(i.content, negative=True)) == subject]
             if mutation.kind != "decision" and any(i.kind == "decision" and i.confirmed_by and i.status == MemoryStatus.ACTIVE for i in existing):
                 raise ValueError("A confirmed decision requires a new decision candidate to replace it")
             membership = {run_id: order for order, run_id in enumerate(self.store.runs(delta.thread_id))}
@@ -142,7 +188,7 @@ class ThreadMemoryManager:
                 raise ValueError("Older sources cannot overwrite a newer memory revision")
             if existing and existing[-1].content == mutation.content:
                 continue
-            status = MemoryStatus.CANDIDATE if mutation.kind == "decision" else MemoryStatus.ACTIVE
+            status = MemoryStatus.ACTIVE if explicit and mutation.kind != "decision" else MemoryStatus.CANDIDATE
             # A pending replacement decision cannot silently revoke a previously
             # confirmed decision. Active conflict is removed only on confirmation.
             for old in existing:
@@ -151,6 +197,8 @@ class ThreadMemoryManager:
                     old.updated_at = now()
             state.items.append(ThreadItem(id=new_id, thread_id=delta.thread_id,
                 key=mutation.key, kind=mutation.kind, content=mutation.content, status=status,
+                support_version=2, content_support="explicit_user" if explicit else "unverified",
+                source_excerpts=mutation.source_excerpts,
                 sources=mutation.sources, importance=mutation.importance, confidence=mutation.confidence,
                 supersedes=existing[-1].id if existing else None))
         state.revision += 1
@@ -166,6 +214,13 @@ class ThreadMemoryManager:
                 or event.payload.get("item_id") != item_id
                 or event.payload.get("content_hash") != stable_id(item.content)):
             raise ValueError("Confirmation must reference the exact current memory content")
+        if item.expires_at:
+            try:
+                expired = datetime.fromisoformat(item.expires_at) <= datetime.now(timezone.utc)
+            except (ValueError, TypeError):
+                expired = True
+            if expired:
+                raise ValueError("Expired memory requires a new source, not confirmation")
         revision = state.revision
         for old in state.items:
             if old.id != item.id and old.key == item.key and old.status == MemoryStatus.ACTIVE:
@@ -173,6 +228,8 @@ class ThreadMemoryManager:
                 old.updated_at = now()
         item.status = MemoryStatus.ACTIVE
         item.confirmed_by = source
+        item.support_version = 2
+        item.content_support = "user_confirmed"
         item.sources.append(source)
         item.updated_at = now()
         state.revision += 1
@@ -209,12 +266,16 @@ class PromotionPolicy:
         if not scope_id:
             raise ValueError("Project memory requires project_id")
         verbatim = any(item.content in e.payload.get("text", "") for e in events if e.type == "human")
-        auto = item.kind == "preference" and durable and not local and verbatim and item.confidence >= 0.85
+        auto = (usable_memory(item) and item.content_support == "explicit_user"
+                and item.kind == "preference" and durable and not local and verbatim and item.confidence >= 0.85)
         confirmed = item.confirmed_by is not None
         return MemoryCandidate(id=stable_id(item.id, scope, scope_id), thread_item_id=item.id, thread_id=item.thread_id,
                                key=item.key, content=item.content, kind=kinds[item.kind], scope=scope, scope_id=scope_id,
                                sources=item.sources, importance=item.importance, confidence=item.confidence,
                                confirmed_by=item.confirmed_by,
+                               support_version=item.support_version, content_support=item.content_support,
+                               source_excerpts=item.source_excerpts,
+                               expires_at=item.expires_at,
                                status=MemoryStatus.ACTIVE if auto or confirmed else MemoryStatus.CANDIDATE)
 
     def promote(self, candidate: MemoryCandidate, store: MemoryStore) -> MemoryRecord:

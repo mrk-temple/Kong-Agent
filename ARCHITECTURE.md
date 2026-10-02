@@ -93,4 +93,8 @@
 
 ## 确定性评测
 
+V0.4A 候选增加 `file_equals`（文本含空白完全一致）与 `file_json`（键集合及递归值类型完全一致，拒绝重复键）。核验每次读取当前文件，最大 1 MB；这些规则只验证显式合同，不保证事实语义真实。`tool_success`、`tool_result`、`evidence` 默认 current，受验收本地文件需与观察的 SHA-256 版本一致；event 只证明历史操作，不能同时声明当前产物路径。远端写回执不能借本地哈希通过 current；泛用 MCP 暂无资源回读适配器。
+
+协议诊断仅保留白名单字段路径和具名错误码；模型提出的记忆条目保存来源片段并进入候选，人工确认/规则原话与语义真实性分开处理。旧无支持信息记忆仍可读取，但未确认条目不直接注入。快照写 schema 2，兼容读取 schema 1；旧无版本核验不能充当当前证明。
+
 `kong/evaluation/`：12 题定义在 `specs.py`（`score_scope` 区分 model 与 mechanism），每题独立工作区、固定超时与轮次上限；`fixtures.py` 提供固定决策模型与模拟工具；`verifiers.py` 在 Runtime 之外核验产物值、保护文件哈希与状态；`runner.py` 保留逐次结果、失败、环境错误与用量。真实模型试次必须显式 `--live`。详细口径见 [EVALUATION](EVALUATION.md)。

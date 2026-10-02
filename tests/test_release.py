@@ -15,7 +15,8 @@ from kong.workspace import Workspace
 
 def observation(n, name, args, output, success=True):
     return Observation(action_id=f"a{n}", turn=n, action=Action(name=name, arguments=args),
-        output=output, success=success, fingerprint=str(n), output_hash=str(n))
+        output=output, success=success, fingerprint=str(n), output_hash=str(n),
+        effect="read" if name == "browser" and args.get("operation") == "snapshot" else "unknown")
 
 
 def test_terminal_start_cannot_pass_exit_criterion(tmp_path):
@@ -33,7 +34,7 @@ def test_terminal_start_cannot_pass_exit_criterion(tmp_path):
 
 def test_browser_and_mcp_typed_result_checks(tmp_path):
     criterion = Criterion(id="mcp", description="result", kind="tool_result", tool_name="mcp", operation="call",
-        arguments_match={"server":"demo","tool":"add"}, output_match={"structured_content":{"result":0}})
+        evidence_scope="event", arguments_match={"server":"demo","tool":"add"}, output_match={"structured_content":{"result":0}})
     history = History(observations=[observation(1,"mcp",{"operation":"call","server":"demo","tool":"add"},
                                               {"structured_content":{"result":False}})])
     assert not result_evidence(criterion, history)  # bool is not an integer result
@@ -131,7 +132,8 @@ def test_repair_runtime_requires_real_check_after_patch(tmp_path):
         Act(actions=[Action(name="process_exec",arguments={"argv":["python","-c","from calc import total; assert total([2,3])==5; assert total([])==0; print('checks passed')"]})]),
         FinalResponse(content="fixed and tested",evidence_ids=["a2"])]), workspace, registry)
     runtime.state.success_criteria = [Criterion(id="check",description="tests after patch",kind="tool_result",
-        tool_name="process_exec",after_last_write=True,output_match={"exit_code":0},output_contains={"/stdout":"checks passed"})]
+        tool_name="process_exec",after_last_write=True,artifact_paths=["calc.py"],
+        output_match={"exit_code":0},output_contains={"/stdout":"checks passed"})]
     asyncio.run(runtime.run())
     assert runtime.state.status == "completed", runtime.state
     report = CompletionGate(workspace).criteria_results(runtime.state,runtime.history,{})

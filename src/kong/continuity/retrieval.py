@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from kong.continuity.contracts import Thread
-from kong.continuity.memory_contracts import MemoryKind, MemoryRecord, MemoryScope, MemoryStatus, RankingConfig
+from kong.continuity.memory_contracts import MemoryKind, MemoryRecord, MemoryScope, RankingConfig
 from kong.continuity.memory_store import MemoryStore, lexical_terms
+from kong.continuity.memory import usable_memory
 
 
 class MemoryRetriever(Protocol):
@@ -29,11 +30,9 @@ class SQLiteMemoryRetriever:
         for store in self.stores:
             lexical = store.lexical(query)
             for record in store.memories():
-                if record.status != MemoryStatus.ACTIVE or not scope_matches(record, thread, project_id):
+                if not usable_memory(record) or not scope_matches(record, thread, project_id):
                     continue
                 if record.kind == MemoryKind.DECISION and not record.confirmed_by:
-                    continue
-                if record.expires_at and datetime.fromisoformat(record.expires_at) <= timestamp:
                     continue
                 # Durable interaction preferences apply without lexical overlap.
                 if record.id not in lexical and record.kind != MemoryKind.PREFERENCE:

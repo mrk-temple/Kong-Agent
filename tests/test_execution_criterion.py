@@ -1,6 +1,7 @@
 from kong.contracts import Action, Criterion, FinalResponse, History, Observation, RunState
 from kong.runtime.gates import CompletionGate
 from kong.workspace import Workspace
+from kong.runtime.evidence import capture_versions
 
 
 def obs(number, tool, success=True):
@@ -17,4 +18,7 @@ def test_verification_before_edit_does_not_satisfy_after_edit_requirement(tmp_pa
     history.observations.append(obs(3,"process_exec",False))
     assert gate.check(state,FinalResponse(content="done",evidence_ids=["a2"]),history)
     history.observations.append(obs(4,"process_exec"))
+    history.observations[-1].evidence_version = 2
+    history.observations[-1].artifact_versions = capture_versions(Workspace(tmp_path), state)
+    history.observations[-1].artifact_versions_before = history.observations[-1].artifact_versions.copy()
     assert not gate.check(state,FinalResponse(content="done",evidence_ids=["a4"]),history)

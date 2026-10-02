@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -7,8 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def cli(workspace, *args, input=None):
+    env = os.environ.copy()
+    # Test this checkout even when its interpreter is installed from another worktree.
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
     return subprocess.run([sys.executable, "-m", "kong", "--workspace", str(workspace), *args],
-                          input=input, capture_output=True, encoding="utf-8", timeout=20)
+                          input=input, capture_output=True, encoding="utf-8", timeout=20, env=env)
 
 
 def test_local_execution_from_cli_and_http_protocol(tmp_path):

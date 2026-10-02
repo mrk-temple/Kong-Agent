@@ -12,6 +12,10 @@ class ModelError(RuntimeError):
 class ModelProtocolError(ModelError):
     """A completed response violated the decision schema; no action was run."""
 
+    def __init__(self, message: str, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or []
+
 
 class Model(Protocol):
     async def generate(self, context: Context | ContextPacket) -> Decision: ...

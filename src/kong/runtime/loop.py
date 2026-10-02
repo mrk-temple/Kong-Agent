@@ -24,6 +24,7 @@ from kong.tools.executor import ToolExecutor
 from kong.tools.registry import ToolRegistry
 from kong.workspace import Workspace
 from kong.skills.tools import SkillTool
+from kong.runtime.evidence import capture_versions, action_effect
 
 
 def digest(value) -> str:
@@ -278,7 +279,8 @@ class Runtime:
                 except ModelError as exc:
                     previous = next((e for e in reversed(self.history.events)
                                      if e.type in {"decision", "model_error"}), None)
-                    self.history.append("model_error", self.state.turn_count, error=str(exc))
+                    self.history.append("model_error", self.state.turn_count, error=str(exc),
+                                        diagnostics=getattr(exc, "diagnostics", []))
                     if isinstance(exc, ModelProtocolError) and (previous is None or previous.type != "model_error"):
                         self.history.append("feedback", self.state.turn_count,
                             error=str(exc), instruction="No action executed. Correct the JSON format on the next budgeted turn.")
@@ -377,6 +379,7 @@ class Runtime:
             self.save()
             if action.name in {"process_exec", "terminal", "browser", "mcp"}:
                 self.on_event("action_started", {"id": action_id, "tool": action.name})
+            versions_before = capture_versions(self.workspace, self.state, action)
             result = await self.executor.execute(ToolCall(name=action.name, arguments=action.arguments))
             progress_output = (self.registry.get(action.name).progress_output(result.output)
                                if action.name in self.registry.names() else result.output)
@@ -387,6 +390,9 @@ class Runtime:
                 # Reading a different required file is new evidence even if its text
                 # matches another file. The same source+result cannot earn another lease.
                 output_hash=digest({"action": action.model_dump(), "output": progress_output}),
+                evidence_version=2, artifact_versions=capture_versions(self.workspace, self.state, action),
+                artifact_versions_before=versions_before,
+                effect=action_effect(action, self.registry),
             )
             self.history.observations.append(observation)
             self.history.append("observation", self.state.turn_count, observation=observation.model_dump(mode="json"))

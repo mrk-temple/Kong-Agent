@@ -201,7 +201,7 @@ async def verify(case, workspace: Path, runtime, protected_hashes: dict[str, str
         checks.update(waiting_for_resolution=runtime.state.status == Status.WAITING_USER and bool(runtime.pending_action_id),
                       no_replay=len(obs) == 0 and not (workspace / "canary.txt").exists(),
                       no_model_call=runtime.metrics.model_calls == 0)
-    elif case.id == "plan_approval":
+    elif case.category == "approval":
         checks.update(expected_approval=runtime.state.mode == Mode.PLAN and runtime.state.status == Status.WAITING_USER
                       and runtime.state.pending_approval is not None and runtime.state.plan is not None
                       and runtime.state.plan.approved_revision is None,

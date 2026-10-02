@@ -119,9 +119,111 @@ def test_mutation_operations_preserve_sources(tmp_path, operation):
     delta = MemoryDelta(thread_id=state.thread_id, base_revision=state.revision,
         mutations=[MemoryMutation(operation=operation, target_id=old.id, key=old.key, kind=old.kind,
                                   content="用户现在自称 d", sources=[source])])
-    result = engine.manager.merge(delta)
-    assert result.items[0].status == {"resolve": MemoryStatus.RESOLVED, "reject": MemoryStatus.REJECTED}.get(operation, MemoryStatus.SUPERSEDED)
+    if operation in {"resolve", "reject"}:
+        with pytest.raises(ValueError, match="explicit memory management"):
+            engine.manager.merge(delta)
+        asyncio.run(runtime.memory_command(operation, item_id=old.id))
+        result = engine.store.state(state.thread_id)
+        assert result.items[0].status == {"resolve": MemoryStatus.RESOLVED, "reject": MemoryStatus.REJECTED}[operation]
+    else:
+        result = engine.manager.merge(delta)
+        assert result.items[0].status == MemoryStatus.ACTIVE
+        assert result.items[-1].status == MemoryStatus.CANDIDATE
     assert all(i.sources for i in result.items)
+
+
+@pytest.mark.parametrize("source_text,claim", [
+    ("hello", "The user's production password is invented"),
+    ("I do not use SQLite", "I use SQLite"),
+    ("I prefer tea", "I prefer tea"),
+])
+def test_model_claims_are_candidates_even_with_valid_quotes(tmp_path, source_text, claim):
+    from kong.continuity.memory_contracts import SourceExcerpt
+    runtime = run(tmp_path, source_text)
+    engine = runtime.context_engine
+    source = source_for(runtime.thread.thread_id, runtime.state.run_id, 0)
+    state = engine.store.state(runtime.thread.thread_id)
+    result = engine.manager.merge(MemoryDelta(thread_id=state.thread_id, base_revision=state.revision,
+        mutations=[MemoryMutation(key="model.claim", content=claim, sources=[source],
+            source_excerpts=[SourceExcerpt(event_id=source.event_id, text=source_text)])]))
+    entry = result.items[-1]
+    assert entry.status == MemoryStatus.CANDIDATE and entry.content_support == "unverified"
+    continued = run(tmp_path, "continue", runtime.thread.thread_id)
+    assert entry.id not in {i["id"] for i in continued.context_engine.last_packet.thread_memory}
+    assert entry.id not in {r["thread_item_id"] for r in continued.context_engine.last_packet.recalled_memories}
+
+
+def test_fabricated_excerpt_rejects_entire_delta(tmp_path):
+    from kong.continuity.memory_contracts import SourceExcerpt
+    runtime = run(tmp_path, "hello")
+    engine = runtime.context_engine
+    state = engine.store.state(runtime.thread.thread_id)
+    source = source_for(state.thread_id, runtime.state.run_id, 0)
+    with pytest.raises(ValueError, match="excerpt"):
+        engine.manager.merge(MemoryDelta(thread_id=state.thread_id, base_revision=state.revision,
+            mutations=[MemoryMutation(key="bad", content="invented", sources=[source],
+                source_excerpts=[SourceExcerpt(event_id=source.event_id, text="not in source")])]))
+    assert engine.store.state(state.thread_id) == state
+
+
+def test_candidate_confirmation_then_correction_and_rejection_affect_context(tmp_path):
+    runtime = run(tmp_path, "hello")
+    engine = runtime.context_engine
+    source = source_for(runtime.thread.thread_id, runtime.state.run_id, 0)
+    state = engine.store.state(runtime.thread.thread_id)
+    result = engine.manager.merge(MemoryDelta(thread_id=state.thread_id, base_revision=state.revision,
+        mutations=[MemoryMutation(key="database", content="SQLite", sources=[source])]))
+    candidate = result.items[-1]
+    assert candidate.source_excerpts[0].text == "hello"
+    asyncio.run(runtime.memory_command("confirm", item_id=candidate.id))
+    asyncio.run(runtime.memory_command("add", key="database", text="Postgres"))
+    updated = engine.store.state(state.thread_id)
+    assert updated.items[0].status == MemoryStatus.SUPERSEDED
+    assert updated.items[-1].content == "Postgres" and updated.items[-1].status == MemoryStatus.ACTIVE
+    asyncio.run(runtime.memory_command("reject", item_id=updated.items[-1].id))
+    later = run(tmp_path, "database", runtime.thread.thread_id)
+    assert not later.context_engine.last_packet.thread_memory
+    assert not later.context_engine.last_packet.recalled_memories
+
+
+@pytest.mark.parametrize("positive,negative", [("I prefer tea", "I no longer prefer tea"),
+                                              ("我喜欢茶", "我不再喜欢茶")])
+def test_explicit_negative_correction_stops_recalling_old_preference(tmp_path, positive, negative):
+    first = run(tmp_path, positive)
+    second = run(tmp_path, negative, first.thread.thread_id)
+    third = run(tmp_path, "What do I prefer?", first.thread.thread_id)
+    assert positive not in [i["content"] for i in third.context_engine.last_packet.thread_memory]
+    assert positive not in [i["content"] for i in third.context_engine.last_packet.recalled_memories]
+    assert negative in [i["content"] for i in third.context_engine.last_packet.thread_memory]
+    assert second.context_engine.store.state(first.thread.thread_id).items[0].status == MemoryStatus.SUPERSEDED
+    run(tmp_path, positive, first.thread.thread_id)
+    final = run(tmp_path, "What do I prefer?", first.thread.thread_id)
+    assert negative not in [i["content"] for i in final.context_engine.last_packet.thread_memory]
+    assert negative not in [i["content"] for i in final.context_engine.last_packet.recalled_memories]
+    assert positive in [i["content"] for i in final.context_engine.last_packet.thread_memory]
+
+
+def test_legacy_unverified_and_expired_thread_items_are_readable_but_not_injected(tmp_path):
+    runtime = run(tmp_path, "my name is Pat")
+    engine = runtime.context_engine
+    state = engine.store.state(runtime.thread.thread_id)
+    item = state.items[0]
+    item.support_version = 1
+    item.content_support = "unverified"
+    state.revision += 1
+    engine.store.save_state(state, state.revision - 1, "legacy-test")
+    continued = run(tmp_path, "who am I", runtime.thread.thread_id)
+    assert not continued.context_engine.last_packet.thread_memory
+    assert engine.store.state(state.thread_id).items[0].content == "my name is Pat"
+    asyncio.run(runtime.memory_command("confirm", item_id=item.id))
+    state = engine.store.state(state.thread_id)
+    state.items[0].expires_at = "2000-01-01T00:00:00+00:00"
+    state.revision += 1
+    engine.store.save_state(state, state.revision - 1, "expiry-test")
+    continued = run(tmp_path, "who am I", runtime.thread.thread_id)
+    assert not continued.context_engine.last_packet.thread_memory
+    with pytest.raises(ValueError, match="Expired"):
+        asyncio.run(runtime.memory_command("confirm", item_id=item.id))
 
 
 def test_scope_filters_global_workspace_project_and_thread(tmp_path):

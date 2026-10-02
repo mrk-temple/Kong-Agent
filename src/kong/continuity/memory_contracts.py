@@ -42,7 +42,20 @@ class Grounded(Contract):
         return self
 
 
-class ThreadItem(Grounded):
+class SourceExcerpt(Contract):
+    event_id: str
+    text: str = Field(min_length=1, max_length=6000)
+
+
+class SupportedMemory(Grounded):
+    # Old records remain readable, but unknown support is not silently trusted.
+    support_version: Literal[1, 2] = 1
+    content_support: Literal["unverified", "explicit_user", "user_confirmed"] = "unverified"
+    source_excerpts: list[SourceExcerpt] = Field(default_factory=list, max_length=100)
+    expires_at: str | None = None
+
+
+class ThreadItem(SupportedMemory):
     id: str = Field(default_factory=lambda: uuid4().hex)
     thread_id: str
     key: str = Field(min_length=1, max_length=200)
@@ -71,6 +84,7 @@ class MemoryMutation(Grounded):
     content: str = Field(min_length=1, max_length=6000)
     importance: float = Field(default=0.5, ge=0, le=1)
     confidence: float = Field(default=0.8, ge=0, le=1)
+    source_excerpts: list[SourceExcerpt] = Field(default_factory=list, max_length=100)
 
 
 class MemoryDelta(Contract):
@@ -97,7 +111,7 @@ class Episode(Grounded):
     created_at: str = Field(default_factory=now)
 
 
-class MemoryCandidate(Grounded):
+class MemoryCandidate(SupportedMemory):
     id: str = Field(default_factory=lambda: uuid4().hex)
     thread_item_id: str
     thread_id: str
@@ -116,7 +130,6 @@ class MemoryRecord(MemoryCandidate):
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     last_accessed_at: str | None = None
-    expires_at: str | None = None
     supersedes: str | None = None
 
 

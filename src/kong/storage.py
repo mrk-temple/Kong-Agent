@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import Literal
 
 from pydantic import Field
@@ -12,8 +13,24 @@ from pydantic import Field
 from kong.contracts import Contract, History, RunState, RunMetrics
 
 
+def atomic_replace(source, target) -> None:
+    """Retry only transient Windows file locks; never rerun an agent action.
+
+    Antivirus/indexers may briefly hold a just-written snapshot. Keep the old
+    destination intact until replacement succeeds; permanent denials still fail.
+    """
+    for delay in (0.02, 0.05, 0.1, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as error:
+            if os.name != "nt" or error.winerror not in {5, 32, 33} or delay is None:
+                raise
+            time.sleep(delay)
+
+
 class Snapshot(Contract):
-    schema_version: int = 1
+    schema_version: int = 2
     workspace: str
     state: RunState
     history: History = Field(default_factory=History)
@@ -42,14 +59,14 @@ class RunStore:
                 stream.write(snapshot.model_dump_json(indent=2))
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temp_name, target)
+            atomic_replace(temp_name, target)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
 
     def load(self, run_id: str) -> Snapshot:
         snapshot = Snapshot.model_validate_json(self.path(run_id).read_text(encoding="utf-8"))
-        if snapshot.schema_version != 1 or snapshot.state.run_id != run_id:
+        if snapshot.schema_version not in {1, 2} or snapshot.state.run_id != run_id:
             raise ValueError("Unsupported snapshot version or mismatched run ID")
         return snapshot
 
@@ -62,7 +79,7 @@ class RunStore:
                 json.dump(report, stream, ensure_ascii=False, indent=2)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(name, target)
+            atomic_replace(name, target)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
