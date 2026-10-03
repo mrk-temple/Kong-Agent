@@ -195,7 +195,9 @@ class CompatibleModel:
             if not isinstance(envelope, dict):
                 raise ValueError("Decision must be an object")
             proposal = envelope.pop("memory_delta", None)
-            decision = DECISION_ADAPTER.validate_python(envelope)
+            from kong.runtime.metrics import measure
+            with measure("validation_seconds"):
+                decision = DECISION_ADAPTER.validate_python(envelope)
             # Auxiliary memory is validated by the ContextEngine after normal
             # runtime handling. An invalid delta must not invalidate a decision.
             self._memory_proposal = proposal

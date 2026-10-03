@@ -58,15 +58,17 @@ class RunStore:
             raise ValueError("Invalid run ID")
         return self.directory / f"{run_id}.json"
 
-    def save(self, snapshot: Snapshot) -> None:
+    def save(self, snapshot: Snapshot) -> int:
         target = self.path(snapshot.state.run_id)
         descriptor, temp_name = tempfile.mkstemp(dir=self.directory, suffix=".tmp")
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(snapshot.model_dump_json(indent=2))
+            payload = snapshot.model_dump_json(indent=2)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             atomic_replace(temp_name, target)
+            return len(payload.encode("utf-8"))
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)

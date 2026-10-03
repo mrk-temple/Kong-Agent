@@ -4,6 +4,7 @@ import hashlib
 from kong.contracts import FinalResponse, History, RunState
 from kong.workspace import Workspace
 from kong.runtime.evidence import fresh
+from kong.runtime.metrics import attributed
 
 
 def subset(actual, expected):
@@ -107,6 +108,7 @@ class CompletionGate:
         self.workspace = workspace
         self.file_versions = {}
 
+    @attributed("validation_seconds")
     def check(self, state: RunState, decision: FinalResponse, history: History) -> list[str]:
         problems: list[str] = []
         changed_goal = max((i for i, e in enumerate(history.events)

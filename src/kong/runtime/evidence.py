@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from kong.runtime.metrics import attributed, count, last_count
 
 
 def criteria(state):
@@ -27,7 +28,9 @@ def needs_versions(criterion):
             and criterion.tool_name not in {"browser", "mcp", "terminal"})
 
 
+@attributed("evidence_hash_seconds")
 def fingerprint(workspace, value):
+    count("hash_calls")
     try:
         path = workspace.resolve(value)
         if not path.exists():
@@ -69,7 +72,10 @@ def fingerprint(workspace, value):
             total += before.st_size
             if total > 100_000_000:
                 return None
-            digest = hashlib.sha256(child.read_bytes()).hexdigest()
+            data = child.read_bytes()
+            count("hashed_file_count")
+            count("hashed_bytes", len(data))
+            digest = hashlib.sha256(data).hexdigest()
             after = child.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 return None
@@ -85,6 +91,7 @@ def capture_versions(workspace, state, action=None):
                                               or criterion.artifact_paths)}
     if state.completion_contract:
         paths.update(state.completion_contract.version_paths())
+    last_count("artifact_count", len(paths))
     return {path: fingerprint(workspace, path) for path in sorted(paths)}
 
 

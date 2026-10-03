@@ -6,6 +6,7 @@ from kong.contracts import (
 )
 from kong.runtime.gates import CompletionGate, ProgressGate
 from kong.runtime.policy import ModePolicy
+from kong.runtime.metrics import attributed
 
 
 class RuntimeController:
@@ -22,6 +23,7 @@ class RuntimeController:
         state.turn_count += 1
         return True
 
+    @attributed("validation_seconds")
     def authorize(self, state: RunState, decision: Decision, *, context_only: bool = False) -> str | None:
         policy = ModePolicy.for_mode(state.mode)
         if state.requires_replan and not isinstance(decision, (PlanProposal, NeedUserInput)):
@@ -67,6 +69,7 @@ class RuntimeController:
         state.status = Status.WAITING_USER
         return Transition(control="pause", reason="plan_approval_required")
 
+    @attributed("validation_seconds")
     def transition(self, state: RunState, decision: Decision, history: History) -> Transition:
         if isinstance(decision, PlanProposal):
             return self.propose(state, decision.plan)

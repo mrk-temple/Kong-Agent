@@ -28,6 +28,7 @@ from kong.runtime.evidence import capture_versions, action_effect
 from kong.runtime.interaction import RunEvent, RunInput
 from kong.tools.permissions import PermissionPolicy, policy_fingerprint
 from kong.completion_contracts import CompletionContract
+from kong.runtime.metrics import measure, metrics_scope
 
 
 def digest(value) -> str:
@@ -95,7 +96,7 @@ class Runtime:
         self.on_event = on_event or (lambda kind, data: None)
         self.pending_action_id: str | None = None
         self.driver = driver
-        self.metrics = RunMetrics()
+        self.metrics = RunMetrics(attribution_coverage="current_driver")
         if not 1 <= read_concurrency <= 8 or not 0 <= model_retry_limit <= 3:
             raise ValueError("Read concurrency must be 1..8; model retry limit must be 0..3")
         self.read_concurrency = read_concurrency
@@ -185,7 +186,11 @@ class Runtime:
         runtime.constraints = list(snapshot.constraints)
         runtime.run_events = list(snapshot.run_events)
         runtime.metrics = snapshot.metrics or RunMetrics(legacy_unknown=True)
-        recorded_calls = sum(e.type == "action_intent" or "skill_action" in e.payload for e in runtime.history.events)
+        if runtime.metrics.attribution_coverage == "current_driver":
+            runtime.metrics.attribution_coverage = "partial_history"
+        not_dispatched = {o.action_id for o in runtime.history.observations if not o.dispatched}
+        recorded_calls = sum((e.type == "action_intent" and e.payload.get("action_id") not in not_dispatched)
+                             or "skill_action" in e.payload for e in runtime.history.events)
         if (runtime.metrics.legacy_unknown or recorded_calls > runtime.metrics.tool_calls
                 or any(t.elapsed_seconds is None for t in runtime.metrics.tool_timings)):
             runtime.metrics.tool_timing_complete = False
@@ -217,7 +222,10 @@ class Runtime:
 
     def save(self) -> None:
         if self.store:
-            self.store.save(self.snapshot())
+            self.metrics.snapshot_calls += 1
+            with measure("snapshot_seconds", self.metrics):
+                size = self.store.save(self.snapshot())
+            self.metrics.snapshot_bytes = size if type(size) is int else None
 
     def emit(self, kind: str, data: dict) -> None:
         event = RunEvent(sequence=1 + len(self.run_events),
@@ -419,6 +427,12 @@ class Runtime:
         self.save()
 
     async def run(self) -> RunState:
+        if self.metrics.attribution_coverage == "unmeasured":
+            self.metrics.attribution_coverage = "partial_history"
+        with metrics_scope(self.metrics):
+            return await self._drive()
+
+    async def _drive(self) -> RunState:
         if self._running:
             raise ValueError("This Runtime already has an active driver")
         self._running = True
@@ -454,7 +468,8 @@ class Runtime:
             self.save()
             if self.store:
                 from kong.reporting import run_report
-                self.store.save_report(self.state.run_id, run_report(self))
+                with metrics_scope(None):  # Derived report validation is outside driver attribution.
+                    self.store.save_report(self.state.run_id, run_report(self))
 
     async def _generate(self, context):
         started = perf_counter()
@@ -506,8 +521,9 @@ class Runtime:
                             "permission_policy": self.executor.permissions.model_dump(),
                             "input_rule": "Newest goal/constraints override stale decisions; use fresh evidence for a changed goal."},
                             ensure_ascii=False), sources=[ContextSource(kind="state", run_id=self.state.run_id)]))
-                    context = await self.context_engine.prepare(thread=self.thread, state=self.state,
-                                                                history=self.history, tools=self.registry.definitions())
+                    with measure("context_build_seconds"):
+                        context = await self.context_engine.prepare(thread=self.thread, state=self.state,
+                                                                    history=self.history, tools=self.registry.definitions())
                     if self._apply_inputs():
                         continue
                     decision = await self._generate(context)
@@ -537,7 +553,8 @@ class Runtime:
                         self.emit("model_retry", {"category": exc.category, "attempt": retries,
                                                   "limit": self.model_retry_limit, "delay_seconds": delay})
                         try:
-                            await asyncio.wait_for(self._input_signal.wait(), timeout=delay)
+                            with measure("retry_wait_seconds"):
+                                await asyncio.wait_for(self._input_signal.wait(), timeout=delay)
                         except TimeoutError:
                             pass
                         continue
@@ -578,7 +595,8 @@ class Runtime:
                             skill_id = f"context{1 + self.metrics.tool_calls}"
                             tool_wall_start = perf_counter()
                             try:
-                                result = await self._execute_timed(skill_id, action)
+                                with measure("tool_wait_seconds"):
+                                    result = await self._execute_timed(skill_id, action)
                             finally:
                                 self.metrics.tool_wall_seconds += perf_counter() - tool_wall_start
                             self.history.append("feedback", self.state.turn_count, skill_action=action.model_dump(),
@@ -628,6 +646,10 @@ class Runtime:
         return self.state
 
     async def _actions(self, decision: Act | NeedDiscovery) -> bool:
+        with metrics_scope(self.metrics):
+            return await self._action_batch(decision)
+
+    async def _action_batch(self, decision: Act | NeedDiscovery) -> bool:
         if any(action.name in self.registry.names() and isinstance(self.registry.get(action.name), SkillTool)
                for action in decision.actions):
             self.history.append("feedback", self.state.turn_count, error="Separate skill context operations from environment actions; batch rejected.")
@@ -675,7 +697,8 @@ class Runtime:
                 for action_id, action, versions in work:
                     from kong.tools.base import ToolResult
                     self._record_result(action_id, action, versions,
-                        ToolResult(success=False, error="Action not started: new user input at dispatch boundary."))
+                        ToolResult(success=False, error="Action not started: new user input at dispatch boundary."),
+                        dispatched=False)
                 self._apply_inputs()
                 self.emit("batch_revoked", {"remaining": len(decision.actions) - index,
                                             "reason": "new_user_input_before_dispatch"})
@@ -687,12 +710,14 @@ class Runtime:
             gathering = asyncio.gather(*tasks)
             cancelled = False
             try:
-                results = await asyncio.shield(gathering) if len(group) > 1 else await gathering
+                with measure("tool_wait_seconds"):
+                    results = await asyncio.shield(gathering) if len(group) > 1 else await gathering
             except asyncio.CancelledError:
                 if len(group) == 1:
                     raise  # The saved intent remains unknown; never replay automatically.
                 cancelled = True
-                results = await gathering  # Drain every started read; no results are dropped.
+                with measure("tool_wait_seconds"):
+                    results = await gathering  # Drain every started read; no results are dropped.
             finally:
                 self._active_cancellable_task = None
                 self.metrics.tool_wall_seconds += perf_counter() - tool_wall_start
@@ -740,11 +765,12 @@ class Runtime:
             timing.elapsed_seconds = perf_counter() - started
             self.metrics.tool_seconds += timing.elapsed_seconds
 
-    def _record_result(self, action_id, action, versions_before, result):
+    def _record_result(self, action_id, action, versions_before, result, *, dispatched=True):
         progress_output = (self.registry.get(action.name).progress_output(result.output)
                            if action.name in self.registry.names() else result.output)
         observation = Observation(action_id=action_id, turn=self.state.turn_count, action=action,
             success=result.success, output=result.output, error=result.error, outcome_unknown=result.outcome_unknown,
+            dispatched=dispatched,
             fingerprint=digest(action.model_dump()),
             output_hash=digest({"action": action.model_dump(), "output": progress_output}),
             evidence_version=2, artifact_versions=capture_versions(self.workspace, self.state, action),

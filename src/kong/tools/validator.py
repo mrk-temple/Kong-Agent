@@ -3,12 +3,14 @@ from typing import Any
 from pydantic import ValidationError
 
 from kong.tools.base import Tool
+from kong.runtime.metrics import attributed
 
 
 class ToolValidationError(ValueError):
     pass
 
 
+@attributed("validation_seconds")
 def validate_arguments(
     tool: Tool,
     arguments: dict[str, Any],

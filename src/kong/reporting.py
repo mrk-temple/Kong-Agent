@@ -1,5 +1,6 @@
 """Deterministic run summaries, kept separate from the model's completion claim."""
 from datetime import datetime, timezone
+import json
 from kong.runtime.gates import CompletionGate
 
 
@@ -55,6 +56,28 @@ def run_report(runtime):
         "Tool wall time measures batch dispatch/checkpoint/execution/draining. Runtime overhead is the remaining active driver time, "
         "including context, evidence hashes, persistence and retry waits. Historical/inflight missing durations remain unknown.")
     metrics["usage_complete"] = (not metrics["legacy_unknown"] and metrics["usage_calls"] == metrics["model_calls"] == state.turn_count)
+    metrics["executor_seconds"] = metrics["tool_seconds"]
+    for key in ("context_build_seconds", "evidence_hash_seconds", "snapshot_seconds", "retry_wait_seconds",
+                "validation_seconds", "tool_wait_seconds", "hash_calls", "hashed_file_count", "hashed_bytes",
+                "snapshot_calls", "artifact_count"):
+        if metrics["attribution_coverage"] == "unmeasured":
+            metrics[key] = None
+        elif key.endswith("_seconds"):
+            metrics[key] = round(metrics[key], 6)
+    metrics["history_event_count"] = len(history.events)
+    metrics["run_event_count"] = len(runtime.run_events)
+    metrics["observation_count"] = len(history.observations)
+    metrics["history_bytes"] = len(json.dumps(history.model_dump(mode="json"), ensure_ascii=False,
+                                               separators=(",", ":")).encode("utf-8"))
+    metrics["attribution_note"] = ("Measured spans overlap: validation can include hashing; model/tool waits can include validation and event persistence. "
+        "Do not sum these spans. Hash counters count visits and bytes read, including repeated files; artifact_count is the last capture scope size. "
+        "Measurements cover this driver, direct action batches and runtime saves; restored history is partial. "
+        "The saved snapshot lags its own final serialization duration/size by one save; this live report records the last completed save. "
+        "Report generation is excluded. history_bytes is one compact UTF-8 serialization at report time.")
+    progress = {"activity_count":state.progress_state.progress_count,
+                "verified_criteria_count":sum(c["verified"] for c in criteria), "declared_criteria_count":len(criteria),
+                "goal_progress_measured":False,
+                "note":"Unique successful outputs currently earn activity credit. This is not verified goal progress; lease policy is unchanged."}
     return {"schema_version":1, "generated_at":datetime.now(timezone.utc).isoformat(),
         "run_id":state.run_id, "status":state.status.value, "goal":state.goal,
         "model_claim":state.final_output, "stop_reason":state.stop_reason,
@@ -65,7 +88,8 @@ def run_report(runtime):
         "unverified":[c["description"] for c in criteria if not c["verified"]] +
             (["未配置确定性验收条件；成功工具证据不等于目标语义正确。"] if not criteria else []),
         "scope_note":"仅检查显式条件与已记录证据；未声明的任务要求、视觉质量、工具外写入未自动验证。文件状态以摘要生成时间为准。",
-        "metrics":metrics, "failed_tools":[{"id":o.action_id,"tool":o.action.name,"error":o.error} for o in history.observations if not o.success],
+        "metrics":metrics, "progress":progress,
+        "failed_tools":[{"id":o.action_id,"tool":o.action.name,"error":o.error} for o in history.observations if not o.success],
         "model_errors":[e.payload.get("error") for e in history.events if e.type == "model_error"],
         "resource_handles_in_history":{k:sorted(v) for k,v in resource_handles(history).items()},
         "resource_note":"历史句柄不保证仍存活；CLI 退出时清理，重启后需重新检查。",

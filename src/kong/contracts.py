@@ -133,6 +133,19 @@ class RunMetrics(Contract):
     tool_wall_seconds: float = Field(default=0, ge=0)
     tool_timings: list[ToolTiming] = Field(default_factory=list)
     tool_timing_complete: bool = True
+    attribution_coverage: Literal["unmeasured", "current_driver", "partial_history"] = "unmeasured"
+    context_build_seconds: float = Field(default=0, ge=0)
+    evidence_hash_seconds: float = Field(default=0, ge=0)
+    snapshot_seconds: float = Field(default=0, ge=0)
+    retry_wait_seconds: float = Field(default=0, ge=0)
+    validation_seconds: float = Field(default=0, ge=0)
+    tool_wait_seconds: float = Field(default=0, ge=0)
+    snapshot_calls: int = Field(default=0, ge=0)
+    snapshot_bytes: int | None = Field(default=None, ge=0)
+    hash_calls: int = Field(default=0, ge=0)
+    hashed_file_count: int = Field(default=0, ge=0)
+    hashed_bytes: int = Field(default=0, ge=0)
+    artifact_count: int = Field(default=0, ge=0)
 
 
 class PlanStep(Contract):
@@ -261,6 +274,7 @@ class Observation(Contract):
     output: Any = None
     error: str | None = None
     outcome_unknown: bool = False
+    dispatched: bool = True
     fingerprint: str
     output_hash: str
     evidence_version: Literal[1, 2] = 1
