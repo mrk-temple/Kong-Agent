@@ -2,7 +2,7 @@
 
 一个面向个人本地任务的单 Agent Runtime：模型只提出决策，授权、执行、证据与验收由 Runtime 完成。
 
-当前版本 **0.3.0**，定位为早期开发者版本。已验证环境为 Windows / Python 3.12；需要 Python 3.12+。
+当前版本 **0.4.0rc1**，是待阶段验收的本地候选。已验证环境为 Windows / Python 3.12；需要 Python 3.12+。
 
 当前开发分支包含未发布的 V0.4A 正确性候选。工程回归已通过，真实任务质量门槛仍未通过；具体测量口径、失败与限制见 [EVALUATION](EVALUATION.md)。
 支持 Chat Completions 兼容模型接口，模型通过结构化 JSON 提出决策。
@@ -222,7 +222,7 @@ uv run python examples/release_regression.py
 uv run python examples/kong_eval.py --list
 uv run python examples/kong_eval.py --repetitions 3
 uv build
-uv run python examples/verify_release_install.py dist/kong_agent-0.3.0-py3-none-any.whl
+uv run python examples/verify_release_install.py dist/kong_agent-0.4.0rc1-py3-none-any.whl
 ```
 
 工程测试、固定模型流程测试和真实模型任务结果分开记录。本地 V0.4B 候选完整工程回归为
@@ -231,7 +231,7 @@ uv run python examples/verify_release_install.py dist/kong_agent-0.3.0-py3-none-
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。评测任务、分母、判分与结果边界见
 [EVALUATION](EVALUATION.md)（题目定义在 [`src/kong/evaluation/specs.py`](src/kong/evaluation/specs.py)）。
 
-`python examples/interactive_comparison.py --output <新目录>` 记录相同 6 个读取任务的串行/并发结果与运行中追加约束。它使用固定模拟延迟，只衡量调度机制；真实模型质量与人工纠偏负担须另测。`python examples/runtime_timing.py --output <新目录> --repetitions 3 --docker-image <已安装可信镜像>` 用固定决策实际执行文件与进程任务，分开测量工具调用、隔离启动/清理和 Runtime 其余耗时，排除供应商等待。CLI 摘要及任务报告保留逐次工具耗时与累计/批次耗时，历史缺失项保持未知。本候选未发布，版本号仍为 0.3.0。
+`python examples/interactive_comparison.py --output <新目录>` 记录相同 6 个读取任务的串行/并发结果与运行中追加约束。它使用固定模拟延迟，只衡量调度机制；真实模型质量与人工纠偏负担须另测。`python examples/runtime_timing.py --output <新目录> --repetitions 3 --docker-image <已安装可信镜像>` 用固定决策实际执行文件与进程任务，分开测量工具调用、隔离启动/清理和 Runtime 其余耗时，排除供应商等待。任务报告新增 context/hash/snapshot/retry/validation/tool wait 归因、字节与事件计数；嵌套耗时不能相加，恢复历史只报告可测部分。唯一成功输出带来的 activity credit 不等于 verified goal progress。本候选未发布。
 
 许可证确定前，发布整理脚本仅生成待审阅候选文件，不向远端上传：
 
