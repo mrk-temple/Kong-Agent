@@ -131,3 +131,17 @@ def has_business_conditions(contract):
         or any(rule.artifact_id == artifact.id for rule in contract.aggregates)
         for artifact in contract.artifacts)
 
+
+def contract_for_task_family(family, contract):
+    """Validate explicit caller scope, without classifying a natural-language goal."""
+    if family is None:
+        return contract
+    if family not in {"code", "data"}:
+        raise ValueError("Task family must be code or data")
+    if contract is None:
+        raise ValueError("Explicit code/data tasks require --completion-contract with host-owned requirements")
+    if contract.family != family:
+        raise ValueError("Completion contract family must match --task-family")
+    if not has_business_conditions(contract):
+        raise ValueError("Declared task family requires structure/value/business conditions, not file existence alone")
+    return contract

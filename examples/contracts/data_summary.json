@@ -1,0 +1,18 @@
+{
+  "family": "data",
+  "protected_paths": ["rows.csv"],
+  "required_reads": ["rows.csv"],
+  "artifacts": [{
+    "id": "summary", "path": "summary.json", "format": "json", "additional_keys": false,
+    "json_fields": [
+      {"name": "included_statuses", "type": "array_string", "allowed": ["active"]},
+      {"name": "count", "type": "integer"},
+      {"name": "total", "type": "number"}
+    ]
+  }],
+  "aggregates": [
+    {"id": "statuses", "source": "rows.csv", "artifact_id": "summary", "field": "included_statuses", "operation": "unique_values", "column": "status", "filters": {"status": ["active"]}},
+    {"id": "count", "source": "rows.csv", "artifact_id": "summary", "field": "count", "operation": "count", "filters": {"status": ["active"]}},
+    {"id": "total", "source": "rows.csv", "artifact_id": "summary", "field": "total", "operation": "sum", "column": "value", "filters": {"status": ["active"]}}
+  ]
+}

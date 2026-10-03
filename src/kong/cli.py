@@ -110,6 +110,8 @@ def print_status(runtime: Runtime) -> None:
     verified = sum(c["verified"] for c in report["criteria"])
     metrics = report["metrics"]
     print(f"验收：{verified}/{len(report['criteria'])} 个显式条件通过；执行耗时 {metrics['active_seconds']:.1f} 秒。")
+    if not report["verification"]["business_acceptance_declared"]:
+        print("业务验收未声明：当前仅记录机械检查；代码/数据任务可使用 --task-family 与 --completion-contract。")
     timing = metrics["tool_timing_complete"]
     print(f"模型等待 {metrics['model_seconds']:.3f} 秒 · 工具调用 {metrics['tool_calls']} 次 · "
           + (f"工具批次等待 {metrics['tool_wall_seconds']:.3f} 秒 · 工具累计 {metrics['tool_seconds']:.3f} 秒 · "
@@ -297,6 +299,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--no-interactive", action="store_true")
     run.add_argument("--criteria", type=Path, help="JSON array of Criterion contracts")
     run.add_argument("--completion-contract", type=Path, help="调用方提供的代码/数据任务完成合同 JSON")
+    run.add_argument("--task-family", choices=["code", "data"], help="显式代码/数据入口；必须提供同类完成合同")
     resume = commands.add_parser("resume", help="恢复一个已保存任务")
     resume.add_argument("run_id")
     resume.add_argument("--no-interactive", action="store_true")
@@ -347,6 +350,12 @@ async def async_main(args) -> int:
 
 
 async def _async_main(args, default_registry) -> int:
+    completion_contract = None
+    if args.command == "run":
+        from kong.completion_contracts import CompletionContract, contract_for_task_family
+        if args.completion_contract:
+            completion_contract = CompletionContract.model_validate_json(args.completion_contract.read_text(encoding="utf-8-sig"))
+        completion_contract = contract_for_task_family(args.task_family, completion_contract)
     workspace = Workspace(args.workspace)
     from kong.tools.permissions import load_permissions
     from kong.runtime.terminal_input import TerminalInput
@@ -501,10 +510,8 @@ async def _async_main(args, default_registry) -> int:
             from pydantic import TypeAdapter
             from kong.contracts import Criterion
             runtime.state.success_criteria = TypeAdapter(list[Criterion]).validate_json(args.criteria.read_text(encoding="utf-8-sig"))
-        if args.completion_contract:
-            from kong.completion_contracts import CompletionContract
-            runtime.set_completion_contract(CompletionContract.model_validate_json(
-                args.completion_contract.read_text(encoding="utf-8-sig")))
+        if completion_contract:
+            runtime.set_completion_contract(completion_contract)
         with store.lock(runtime.state.run_id):
             return await drive(runtime, not args.no_interactive, get_reader() if not args.no_interactive else None)
     # One terminal conversation is a Thread; each goal keeps its own Run budget.

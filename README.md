@@ -259,6 +259,17 @@ Python 代码检查需同时在合同和 `process_exec` 动作中声明 `fresh_p
 
 保护源初始版本进入快照，恢复不重新基线。运行中替换目标或追加约束会使已绑定合同失效并暂停；调用方通过 `Runtime.set_completion_contract` 更新后明确继续，新保护路径需在新的 Run 开始时声明。未声明任务要求不被自动核验，已有不带合同的 Run 保持原语义。
 
+显式代码/数据入口使用 `--task-family code` 或 `--task-family data`，必须同时提供同类合同；缺少合同、family 不符或只有文件存在性的数据合同在调用模型前拒绝。可从 [代码合同](examples/contracts/code_repair.json) 或 [数据汇总合同](examples/contracts/data_summary.json) 开始，按实际目标审阅路径、字段、汇总规则与检查命令。示例不会创建输入或执行检查：
+
+```powershell
+kong --allow-process run "修复 calc.py 并通过检查" --task-family code --completion-contract examples/contracts/code_repair.json
+kong run "汇总 rows.csv 中 active 记录" --task-family data --completion-contract examples/contracts/data_summary.json
+```
+
+运行时会将当前未满足条件、具体命令失败原因和候选证据置于收尾上下文，指导模型先检查、后最终回读、再提交；没有隐式动作或自动完成。`patch_file` 接受 `read_file` 的换行视图，仍要求唯一字面匹配，保留替换范围外的字节。
+
+摘要新增 `verification` 与 `closure`：区分合同/值条件/机械检查，记录首次观测到产物条件通过后的调用数、耗时、失效及拒绝修正。只证明声明的条件；字段类型或命令成功不能覆盖未声明的业务要求。旧运行缺少检查点时保持未知，活动积分和续租策略保持原样。
+
 ## 文档导航
 
 | 文档 | 内容 |

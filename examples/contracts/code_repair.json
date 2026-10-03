@@ -1,0 +1,7 @@
+{
+  "family": "code",
+  "protected_paths": ["check.py"],
+  "required_reads": ["calc.py", "check.py"],
+  "artifacts": [{"id": "source", "path": "calc.py", "format": "file"}],
+  "commands": [{"id": "tests", "argv": ["python", "check.py"], "fresh_python": true, "stdout_contains": ["checks passed"]}]
+}
