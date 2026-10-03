@@ -180,6 +180,11 @@ class ProgressState(Contract):
     checkpoint_progress: int = 0
     recovery_attempts: int = 0
     assessment_reason: str | None = None
+    progress_version: Literal[2] = 2
+    activity_count: int = 0
+    scope_key: str | None = None
+    read_credit_keys: list[str] = Field(default_factory=list, max_length=10000)
+    verified_credit_keys: list[str] = Field(default_factory=list, max_length=10000)
 
 
 class Approval(Contract):
@@ -188,6 +193,8 @@ class Approval(Contract):
 
 
 class RunState(Contract):
+    progress_paths: list[str] = Field(default_factory=list, max_length=512,
+        description="Host-declared inspection resources; cleared when the goal changes.")
     completion_scope: Literal["declared", "mechanical"] = Field(default="declared",
         description="Host-owned scope. Mechanical completion never claims business acceptance.")
     completion_contract: CompletionContract | None = None

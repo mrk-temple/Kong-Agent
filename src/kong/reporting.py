@@ -74,10 +74,13 @@ def run_report(runtime):
         "Measurements cover this driver, direct action batches and runtime saves; restored history is partial. "
         "The saved snapshot lags its own final serialization duration/size by one save; this live report records the last completed save. "
         "Report generation is excluded. history_bytes is one compact UTF-8 serialization at report time.")
-    progress = {"activity_count":state.progress_state.progress_count,
+    progress = {"activity_count":state.progress_state.activity_count,
+                "task_credit_count":state.progress_state.progress_count,
+                "inspection_credit_count":len(state.progress_state.read_credit_keys),
+                "verified_credit_count":len(state.progress_state.verified_credit_keys),
                 "verified_criteria_count":sum(c["verified"] for c in criteria), "declared_criteria_count":len(criteria),
                 "goal_progress_measured":False,
-                "note":"Unique successful outputs currently earn activity credit. This is not verified goal progress; lease policy is unchanged."}
+                "note":"Activity never directly renews a lease. Bounded declared-resource reads and newly verified requirements earn scheduling credit; undeclared exploration earns at most one. This does not measure undeclared semantic correctness."}
     from kong.runtime.verification_reporting import verification_summary, closure_summary
     return {"schema_version":1, "generated_at":datetime.now(timezone.utc).isoformat(),
         "run_id":state.run_id, "status":state.status.value, "goal":state.goal,

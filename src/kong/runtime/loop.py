@@ -45,7 +45,7 @@ class Runtime:
                  on_event: Callable[[str, dict], None] | None = None, driver: str = "compatible",
                  permissions: PermissionPolicy | None = None, read_concurrency: int = 3,
                  model_retry_limit: int = 2, completion_contract: CompletionContract | dict | None = None,
-                 completion_scope: str | None = None):
+                 completion_scope: str | None = None, progress_paths: list[str] | None = None):
         self.model = model
         self.workspace = workspace
         self.registry = registry
@@ -116,6 +116,18 @@ class Runtime:
         self._last_delta = 0
         self._cancel_requested = False
         self._active_cancellable_task = None
+        if history is not None and "progress_version" not in self.state.progress_state.model_fields_set:
+            # Historic novel-output points are activity, never new lease authority.
+            p = self.state.progress_state
+            p.activity_count = p.progress_count
+            p.checkpoint_progress = p.progress_count
+            p.progress_version = 2
+        if progress_paths is not None:
+            if history is not None:
+                raise ValueError("Restore preserves its saved inspection resources")
+            for path in progress_paths:
+                workspace.resolve(path)
+            self.state.progress_paths = list(progress_paths)
         if completion_scope is not None:
             if history is not None:
                 raise ValueError("Restore preserves its saved completion scope")
@@ -148,6 +160,7 @@ class Runtime:
         self.state.completion_contract = contract
         self.state.contract_protected_versions = protected
         self.state.contract_invalidated = False
+        ProgressGate.reset_scope(self.state)
         self.history.append("feedback", self.state.turn_count, completion_contract_bound=digest(contract.model_dump(mode="json")))
         self.save()
 
@@ -298,6 +311,7 @@ class Runtime:
             elif item.kind == "goal":
                 self.state.goal = item.text
                 self.state.success_criteria = []  # Old goal contracts remain in audit history, not new authority.
+                self.state.progress_paths = []
             if item.kind != "cancel" and self.state.plan:
                 self.state.plan = None
                 self.state.requires_replan = True
@@ -305,6 +319,8 @@ class Runtime:
                 self.state.current_plan_step = None
         if contract_changed:
             self.state.contract_invalidated = True
+        if any(item.kind != "cancel" for item in items):
+            ProgressGate.reset_scope(self.state)
         if cancelling:
             self.state.status = Status.STOPPED
             self.state.stop_reason = "user_interrupted"
@@ -689,6 +705,8 @@ class Runtime:
             criteria = self.controller.completion_gate.criteria_results(self.state, self.history, last.get("criteria_evidence", {}))
         if not criteria:
             return
+        if self.history.observations:
+            ProgressGate.observe_verified(self.state, criteria)
         values = {**checkpoint_values(criteria), "status": self.state.status.value,
                   "scope_event_index": verification_epoch(self.history)}
         previous = next((e.payload["verification_checkpoint"] for e in reversed(self.history.events)
@@ -834,7 +852,7 @@ class Runtime:
         if not result.outcome_unknown:
             self.pending_action_ids.remove(action_id)
         self.pending_action_id = next(iter(self.pending_action_ids), None)
-        ProgressGate.observe(self.state, self.history)
+        ProgressGate.observe(self.state, self.history, self.workspace)
         timing = next((t for t in reversed(self.metrics.tool_timings) if t.action_id == action_id), None)
         self.emit("action_finished", {"id": action_id, "tool": action.name, "success": result.success,
                                       "outcome_unknown": result.outcome_unknown,

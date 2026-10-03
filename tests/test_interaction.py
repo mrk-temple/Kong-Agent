@@ -365,7 +365,9 @@ def test_restore_rechecks_host_permissions_and_audits_changes(tmp_path):
 
 def test_event_consumer_failure_cannot_replay_or_lose_a_write(tmp_path):
     runtime = runtime_for(tmp_path, ScriptedModel([Act(actions=[action("write_file", path="once.txt", content="ok")]),
-        FinalResponse(content="done", evidence_ids=["a1"])]))
+            FinalResponse(content="done", evidence_ids=["a1"])]))
+    runtime.state.success_criteria = [Criterion(id="once", description="one durable write", kind="file_equals",
+                                               path="once.txt", expected_text="ok")]
     def broken(kind, data):
         raise RuntimeError("renderer failure")
     runtime.on_event = broken

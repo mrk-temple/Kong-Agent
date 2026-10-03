@@ -78,4 +78,5 @@ def test_activity_does_not_claim_verified_goal_progress(tmp_path):
                                                 for i in range(6)])))
     progress = run_report(runtime)["progress"]
     assert progress["activity_count"] == 6 and progress["verified_criteria_count"] == 0
+    assert progress["task_credit_count"] == 0
     assert progress["goal_progress_measured"] is False

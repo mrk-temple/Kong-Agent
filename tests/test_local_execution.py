@@ -178,7 +178,7 @@ def test_local_read_execute_artifact_verify_runtime(tmp_path):
         FinalResponse(content="Total: 16", evidence_ids=["a3"])]),
         workspace, default_registry(workspace, allow_process=True),
         store=RunStore(tmp_path / ".kong" / "runs"))
-    runtime.state.success_criteria = [Criterion(id="total", description="correct sum", kind="file_contains", path="report.txt", contains="Total: 16")]
+    runtime.state.success_criteria = [Criterion(id="total", description="correct sum", kind="file_equals", path="report.txt", expected_text="Total: 16")]
     assert asyncio.run(runtime.run()).status == Status.COMPLETED
     assert (tmp_path / "report.txt").read_text() == "Total: 16"
     assert runtime.context_engine.last_packet.budget_enforced
@@ -192,7 +192,8 @@ def test_repeated_process_result_does_not_manufacture_progress(tmp_path):
         Act(actions=[action, action]), FinalResponse(content="done", evidence_ids=["a2"])]),
         workspace, default_registry(workspace, allow_process=True))
     asyncio.run(runtime.run())
-    assert runtime.state.progress_state.progress_count == 1
+    assert runtime.state.progress_state.activity_count == 1
+    assert runtime.state.progress_state.progress_count == 0
 
 
 def test_patch_exact_match_preserves_line_endings_and_rejects_ambiguity(tmp_path):

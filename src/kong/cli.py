@@ -302,6 +302,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--task-family", choices=["code", "data"], help="显式代码/数据入口；必须提供同类完成合同")
     run.add_argument("--completion-scope", choices=["declared", "mechanical"], default="declared",
                      help="默认需要声明验收条件；mechanical 仅结束机械检查，不确认业务完成")
+    run.add_argument("--progress-path", action="append", default=[],
+                     help="调用方声明的检查文件或目录；可重复指定，为有界探索提供续租依据")
     resume = commands.add_parser("resume", help="恢复一个已保存任务")
     resume.add_argument("run_id")
     resume.add_argument("--no-interactive", action="store_true")
@@ -505,7 +507,7 @@ async def _async_main(args, default_registry) -> int:
     registry = default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web))
     if args.command == "run":
         runtime = Runtime.new(args.goal, model, workspace, registry, Mode(args.mode), store=store,
-                              thread_id=args.thread, on_event=events,
+                              thread_id=args.thread, on_event=events, progress_paths=args.progress_path,
                               memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
         configure(runtime)
         runtime.state.completion_scope = args.completion_scope

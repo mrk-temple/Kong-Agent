@@ -18,11 +18,11 @@ def plan():
                 success_criteria=[Criterion(id="c1", description="实际读取资料")])
 
 
-def make_runtime(tmp_path, decisions, mode=Mode.AUTO, store=False):
+def make_runtime(tmp_path, decisions, mode=Mode.AUTO, store=False, **kwargs):
     workspace = Workspace(tmp_path)
     model = ScriptedModel(decisions)
     runtime = Runtime.new("完成目标", model, workspace, default_registry(workspace), mode,
-                          store=RunStore(tmp_path / ".kong" / "runs") if store else None)
+                          store=RunStore(tmp_path / ".kong" / "runs") if store else None, **kwargs)
     return runtime, model
 
 
@@ -50,7 +50,7 @@ def test_many_actions_renew_lease_without_plan(tmp_path):
         if (index + 1) % 4 == 0:
             decisions.append(ProgressAssessment(diagnosis="新信息且路径明确", next_strategy="continue"))
     decisions.append(FinalResponse(content="读取完毕", evidence_ids=["a12"]))
-    runtime, model = make_runtime(tmp_path, decisions)
+    runtime, model = make_runtime(tmp_path, decisions, completion_scope="mechanical", progress_paths=["."])
     assert run(runtime).status == Status.COMPLETED
     assert runtime.state.plan is None
     assert runtime.state.mode == Mode.AUTO
@@ -70,7 +70,7 @@ def test_inspect_100_identical_files_without_a_plan(tmp_path):
         if batch_index % 4 == 0:
             decisions.append(ProgressAssessment(diagnosis="逐个检查新文件，路径明确", next_strategy="continue"))
     decisions.append(FinalResponse(content="检查完100份文件", evidence_ids=[f"a{i}" for i in range(1, 101)]))
-    runtime, model = make_runtime(tmp_path, decisions)
+    runtime, model = make_runtime(tmp_path, decisions, completion_scope="mechanical", progress_paths=["."])
     assert run(runtime).status == Status.COMPLETED
     assert len(runtime.history.observations) == 100
     assert model.calls == 17
@@ -150,11 +150,12 @@ def test_approved_plan_completes_only_with_steps_and_evidence(tmp_path):
         CompletePlanStep(step_id="s1", evidence_ids=["invented"]),
         CompletePlanStep(step_id="s1", evidence_ids=["a1"]),
         FinalResponse(content="已完成", evidence_ids=["a1"], criteria_evidence={"c1": ["a1"]}),
-    ], Mode.PLAN)
+    ], Mode.PLAN, completion_scope="mechanical")
     run(runtime)
     runtime.human("approve", revision=1)
     assert run(runtime).status == Status.COMPLETED
-    assert runtime.state.final_output == "已完成"
+    assert runtime.state.final_output.endswith("已完成")
+    assert "业务完成未确认" in runtime.state.final_output
     assert runtime.state.plan.steps[0].evidence_ids == ["a1"]
 
 
@@ -176,7 +177,8 @@ def test_failed_tool_is_not_completion(tmp_path):
 
 def test_real_recovery_can_complete(tmp_path):
     (tmp_path / "good").write_text("data")
-    runtime, _ = make_runtime(tmp_path, [read("bad"), read("good"), FinalResponse(content="已找到资料", evidence_ids=["a2"])])
+    runtime, _ = make_runtime(tmp_path, [read("bad"), read("good"), FinalResponse(content="已找到资料", evidence_ids=["a2"])],
+                              completion_scope="mechanical")
     assert run(runtime).status == Status.COMPLETED
 
 

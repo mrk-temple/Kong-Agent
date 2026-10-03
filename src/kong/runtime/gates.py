@@ -5,6 +5,7 @@ from kong.contracts import FinalResponse, History, RunState
 from kong.workspace import Workspace
 from kong.runtime.evidence import fresh
 from kong.runtime.metrics import attributed
+from kong.runtime.progress import ProgressGate  # Public compatibility import.
 
 
 def subset(actual, expected):
@@ -67,40 +68,6 @@ def result_evidence(criterion, history, workspace=None, state=None):
         if not isinstance(value, str) or required not in value:
             return []
     return [observation.action_id]
-
-
-class ProgressGate:
-    @staticmethod
-    def observe(state: RunState, history: History) -> None:
-        observation = history.observations[-1]
-        progress = state.progress_state
-        if observation.fingerprint == progress.last_action_fingerprint:
-            progress.repeated_actions += 1
-        else:
-            progress.repeated_actions = 1
-        progress.last_action_fingerprint = observation.fingerprint
-        progress.consecutive_failures = 0 if observation.success else progress.consecutive_failures + 1
-        # New errors are not progress. Repeating an identical source/result is not progress.
-        if observation.success and observation.output_hash not in progress.observed_hashes:
-            progress.observed_hashes.append(observation.output_hash)
-            progress.progress_count += 1
-
-    @staticmethod
-    def trigger(state: RunState) -> str | None:
-        p = state.progress_state
-        if p.consecutive_failures >= 2:
-            return "consecutive_failures"
-        if p.repeated_actions >= 3:
-            return "repeated_actions"
-        if state.turn_count >= state.turn_budget:
-            return "lease_exhausted"
-        return None
-
-    @staticmethod
-    def can_renew(state: RunState) -> bool:
-        p = state.progress_state
-        return (p.progress_count > p.checkpoint_progress
-                and p.consecutive_failures == 0 and p.repeated_actions < 3)
 
 
 class CompletionGate:
