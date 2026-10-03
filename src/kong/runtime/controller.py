@@ -88,7 +88,8 @@ class RuntimeController:
                 return Transition(control="pause", reason="plan_discussion")
             problems = self.completion_gate.check(state, decision, history)
             if problems:
-                history.append("feedback", state.turn_count, completion_rejected=problems)
+                history.append("feedback", state.turn_count, completion_rejected=problems,
+                    completion_feedback=self.completion_gate.rejection_feedback(state, decision, history, problems))
             else:
                 state.final_output = decision.content
                 state.status = Status.COMPLETED

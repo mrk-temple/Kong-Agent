@@ -217,3 +217,7 @@ class CompletionGate:
                                                  if o.action.name == criterion.tool_name and o.artifact_versions}})
         from kong.runtime.completion import contract_results
         return results + contract_results(state, history, self.workspace)
+
+    def rejection_feedback(self, state, decision, history, problems):
+        from kong.runtime.finalization import rejection_feedback
+        return rejection_feedback(self, state, decision, history, problems)
