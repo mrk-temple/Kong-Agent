@@ -27,15 +27,18 @@ def test_normalized_duplicate_is_rejected_without_writing(tmp_path, text):
     original = text.encode()
     (tmp_path / "note.txt").write_bytes(original)
     result = asyncio.run(PatchFileTool(Workspace(tmp_path)).run(
-        path="note.txt", old_text="same\nline", new_text="replacement"))
-    # A mixed-newline file with an exact raw occurrence retains the legacy exact
-    # path; use a read-view needle whose final newline has no raw occurrence.
-    if text.startswith("same\r\nline\nsame"):
-        (tmp_path / "note.txt").write_bytes(original)
-        result = asyncio.run(PatchFileTool(Workspace(tmp_path)).run(
-            path="note.txt", old_text="same\nline\n", new_text="replacement"))
+        path="note.txt", old_text="same\nline\n", new_text="replacement"))
     assert not result.success
     assert (tmp_path / "note.txt").read_bytes() == original
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_multiline_insertion_at_single_line_match_keeps_file_convention(tmp_path, newline):
+    original = f"prefix{newline}old{newline}tail{newline}"
+    (tmp_path / "note.txt").write_bytes(original.encode())
+    result = asyncio.run(PatchFileTool(Workspace(tmp_path)).run(path="note.txt", old_text="old", new_text="new\nline"))
+    assert result.success
+    assert (tmp_path / "note.txt").read_bytes() == original.replace("old", f"new{newline}line").encode()
 
 
 def test_mixed_newline_patch_preserves_bytes_outside_unique_match(tmp_path):

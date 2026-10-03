@@ -71,7 +71,9 @@ class PatchFileTool(Tool):
                 output={**diagnostic, "code": "patch.match_count",
                         "next_action": "Use a unique literal from the current read; do not repeat unchanged failed parameters on this source version."})
         start, end = span
-        replacement = replacement_newlines(text[start:end], kwargs["new_text"])
+        region = text[start:end]
+        convention = region if "\r" in region or "\n" in region else text
+        replacement = replacement_newlines(convention, kwargs["new_text"])
         updated = text[:start] + replacement + text[end:]
         if len(updated.encode("utf-8")) > 256000:
             return ToolResult(success=False, error="Patched file exceeds the 256 KB limit")
