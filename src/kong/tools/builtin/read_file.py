@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ class ReadFileArgs(BaseModel):
 
 class ReadFileTool(Tool):
     read_only = True
+    parallel_safe = True
     name = "read_file"
     description = "Read UTF-8 text. For long files use offset/max_chars to read successive excerpts; context truncation provides next_offset."
     args_model = ReadFileArgs
@@ -27,6 +29,9 @@ class ReadFileTool(Tool):
         self.workspace = workspace
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        return await asyncio.to_thread(self._run, **kwargs)
+
+    def _run(self, **kwargs: Any) -> ToolResult:
         path = kwargs["path"]
 
         try:

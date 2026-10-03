@@ -24,6 +24,8 @@ class RuntimeController:
 
     def authorize(self, state: RunState, decision: Decision, *, context_only: bool = False) -> str | None:
         policy = ModePolicy.for_mode(state.mode)
+        if state.requires_replan and not isinstance(decision, (PlanProposal, NeedUserInput)):
+            return "User input invalidated the approved plan. Propose a fresh plan before further actions or completion."
         if context_only and isinstance(decision, (Act, NeedDiscovery)):
             return None  # Runtime verified every member is a host-owned SkillTool.
         if isinstance(decision, PlanProposal) and not policy.plan_allowed:
@@ -55,6 +57,7 @@ class RuntimeController:
             step.done = False
             step.evidence_ids = []
         state.plan = plan
+        state.requires_replan = False
         state.plan_revision = plan.revision
         state.current_plan_step = plan.steps[0].id
         state.pending_approval = Approval(revision=plan.revision, reason=plan.rationale)

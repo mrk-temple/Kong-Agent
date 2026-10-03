@@ -6,13 +6,13 @@ from time import perf_counter
 from collections.abc import Callable
 
 from kong.context import ContextBuilder
-from kong.continuity.contracts import ContextBudget, Thread
+from kong.continuity.contracts import ContextBudget, Thread, ContextItem, ContextSource
 from kong.continuity.engine import ContextEngine
 from kong.continuity.storage import ThreadStore
 from kong.continuity.history import HistorySelector
 from kong.contracts import (
     Act, History, Mode, NeedDiscovery, Observation, RunState,
-    Status, Transition, RunMetrics,
+    Status, Transition, RunMetrics, Phase, ToolTiming,
 )
 from kong.models.base import Model, ModelError, ModelProtocolError
 from kong.runtime.controller import RuntimeController
@@ -25,6 +25,8 @@ from kong.tools.registry import ToolRegistry
 from kong.workspace import Workspace
 from kong.skills.tools import SkillTool
 from kong.runtime.evidence import capture_versions, action_effect
+from kong.runtime.interaction import RunEvent, RunInput
+from kong.tools.permissions import PermissionPolicy, policy_fingerprint
 
 
 def digest(value) -> str:
@@ -38,7 +40,9 @@ class Runtime:
                  context_engine: ContextEngine | None = None, thread_id: str | None = None,
                  thread_store: ThreadStore | None = None,
                  memory_store=None, project_id: str | None = None,
-                 on_event: Callable[[str, dict], None] | None = None, driver: str = "compatible"):
+                 on_event: Callable[[str, dict], None] | None = None, driver: str = "compatible",
+                 permissions: PermissionPolicy | None = None, read_concurrency: int = 3,
+                 model_retry_limit: int = 2):
         self.model = model
         self.workspace = workspace
         self.registry = registry
@@ -91,6 +95,21 @@ class Runtime:
         self.pending_action_id: str | None = None
         self.driver = driver
         self.metrics = RunMetrics()
+        if not 1 <= read_concurrency <= 8 or not 0 <= model_retry_limit <= 3:
+            raise ValueError("Read concurrency must be 1..8; model retry limit must be 0..3")
+        self.read_concurrency = read_concurrency
+        self.model_retry_limit = model_retry_limit
+        self.executor.permissions = permissions or PermissionPolicy()
+        self.pending_action_ids: list[str] = []
+        self.queued_inputs: list[RunInput] = []
+        self.constraints: list[str] = []
+        self.run_events: list[RunEvent] = []
+        self._running = False
+        self._model_task = None
+        self._input_signal = asyncio.Event()
+        self._last_delta = 0
+        self._cancel_requested = False
+        self._active_cancellable_task = None
 
     @classmethod
     def new(cls, goal: str, model: Model, workspace: Workspace, registry: ToolRegistry,
@@ -123,7 +142,17 @@ class Runtime:
         runtime = cls(model, workspace, registry, snapshot.state, history=snapshot.history,
                       driver=snapshot.driver, thread_id=snapshot.thread_id, **kwargs)
         runtime.pending_action_id = snapshot.pending_action_id
+        runtime.pending_action_ids = list(snapshot.pending_action_ids)
+        if snapshot.pending_action_id and snapshot.pending_action_id not in runtime.pending_action_ids:
+            runtime.pending_action_ids.insert(0, snapshot.pending_action_id)
+        runtime.queued_inputs = list(snapshot.queued_inputs)
+        runtime.constraints = list(snapshot.constraints)
+        runtime.run_events = list(snapshot.run_events)
         runtime.metrics = snapshot.metrics or RunMetrics(legacy_unknown=True)
+        recorded_calls = sum(e.type == "action_intent" or "skill_action" in e.payload for e in runtime.history.events)
+        if (runtime.metrics.legacy_unknown or recorded_calls > runtime.metrics.tool_calls
+                or any(t.elapsed_seconds is None for t in runtime.metrics.tool_timings)):
+            runtime.metrics.tool_timing_complete = False
         from kong.reporting import resource_handles
         unavailable = {}
         for name, ids in resource_handles(runtime.history).items():
@@ -135,7 +164,8 @@ class Runtime:
         if unavailable:
             runtime.history.append("feedback", runtime.state.turn_count, unavailable_resources=unavailable,
                 instruction="恢复了任务记录，但这些交互连接不可用。先检查已有产物与副作用；不要自动重放旧操作，旧句柄不能当作活连接。")
-        if snapshot.pending_action_id:
+        if runtime.pending_action_ids:
+            runtime.pending_action_id = runtime.pending_action_ids[0]
             runtime.state.status = Status.WAITING_USER
             runtime.state.pending_question = (
                 "上次执行在动作期间中断，结果未知。请检查工作区，再使用 /resolve 描述实际结果；不会自动重放动作。")
@@ -144,11 +174,84 @@ class Runtime:
     def snapshot(self) -> Snapshot:
         return Snapshot(workspace=str(self.workspace.root), state=self.state,
                         history=self.history, pending_action_id=self.pending_action_id, driver=self.driver,
-                        thread_id=self.thread.thread_id, project_id=self.context_engine.project_id, metrics=self.metrics)
+                        thread_id=self.thread.thread_id, project_id=self.context_engine.project_id, metrics=self.metrics,
+                        pending_action_ids=self.pending_action_ids, queued_inputs=self.queued_inputs,
+                        constraints=self.constraints, run_events=self.run_events)
 
     def save(self) -> None:
         if self.store:
             self.store.save(self.snapshot())
+
+    def emit(self, kind: str, data: dict) -> None:
+        event = RunEvent(sequence=1 + len(self.run_events),
+                         run_id=self.state.run_id, thread_id=self.thread.thread_id,
+                         turn=self.state.turn_count, status=self.state.status.value, kind=kind, data=data)
+        self.run_events.append(event)
+        self.save()  # A displayed event always has a durable counterpart when storage is enabled.
+        try:
+            self.on_event(kind, {**data, "event": event.model_dump(mode="json")})
+        except Exception as exc:
+            self.history.append("feedback", self.state.turn_count, event_callback_error=type(exc).__name__)
+
+    def submit_input(self, kind: str, text: str = "") -> str:
+        """Call on the owning event loop; other threads use call_soon_threadsafe."""
+        if self.state.status != Status.RUNNING or len(self.queued_inputs) >= 32:
+            raise ValueError("Input queue requires a running task and has a 32-message limit")
+        item = RunInput(kind=kind, text=text.strip())
+        if item.kind != "cancel" and not item.text:
+            raise ValueError("A constraint or replacement goal requires text")
+        self.queued_inputs.append(item)
+        self._input_signal.set()
+        self.emit("input_queued", {"input_id": item.id, "kind": item.kind, "boundary": "before_next_action_or_decision"})
+        if kind == "cancel" and self._model_task and not self._model_task.done():
+            self._model_task.cancel()
+        if kind == "cancel":
+            self._cancel_requested = True
+            if self._active_cancellable_task and not self._active_cancellable_task.done():
+                self._active_cancellable_task.cancel()
+        return item.id
+
+    def _apply_inputs(self) -> bool:
+        if not self.queued_inputs:
+            return False
+        items, self.queued_inputs = self.queued_inputs, []
+        self._input_signal.clear()
+        cancelling = any(item.kind == "cancel" for item in items)
+        for item in items:
+            previous = {}
+            if item.kind == "goal":
+                previous = {"previous_goal": self.state.goal,
+                            "retired_criteria": [c.model_dump(mode="json") for c in self.state.success_criteria]}
+            if item.kind != "cancel" and self.state.plan:
+                previous["retired_plan"] = self.state.plan.model_dump(mode="json")
+            self.history.append("human", self.state.turn_count, command="input_" + item.kind,
+                                text=item.text, input_id=item.id, **previous)
+            if item.kind == "constraint":
+                self.constraints.append(item.text)
+            elif item.kind == "goal":
+                self.state.goal = item.text
+                self.state.success_criteria = []  # Old goal contracts remain in audit history, not new authority.
+            if item.kind != "cancel" and self.state.plan:
+                self.state.plan = None
+                self.state.requires_replan = True
+                self.state.pending_approval = None
+                self.state.current_plan_step = None
+        if cancelling:
+            self.state.status = Status.STOPPED
+            self.state.stop_reason = "user_interrupted"
+        elif self.state.status == Status.RUNNING:
+            self.state.phase = Phase.DECIDE
+        self.save()
+        # Commit the whole input batch and its resulting state before acknowledging
+        # any member. A crash cannot lose the remaining drained input or cancellation.
+        for item in items:
+            self.emit("input_applied", {"input_id": item.id, "kind": item.kind})
+        return True
+
+    def _stream_progress(self, data):
+        if perf_counter() - self._last_delta >= 0.5:
+            self._last_delta = perf_counter()
+            self.emit("model_output", data)
 
     def human(self, command: str, **kwargs) -> None:
         if self.pending_action_id:
@@ -229,16 +332,52 @@ class Runtime:
         self.history.append("human", self.state.turn_count, command="resolve_interrupted_action",
                             action_id=self.pending_action_id, text=text,
                             instruction="Inspect real environment evidence before further writes or completion.")
-        self.pending_action_id = None
+        if self.pending_action_id in self.pending_action_ids:
+            self.pending_action_ids.remove(self.pending_action_id)
+        self.pending_action_id = next(iter(self.pending_action_ids), None)
+        if self.pending_action_id:
+            self.state.pending_question = "还有结果未知的动作：" + ", ".join(self.pending_action_ids) + "。请逐项 /resolve。"
+            self.save()
+            return
+        if self.state.status == Status.STOPPED:
+            self.state.status = Status.WAITING_USER
+            self.state.pending_question = "已核查未知动作；继续检查实际环境。"
         self.controller.human(self.state, self.history, "answer", text=text)
         self.save()
 
     async def run(self) -> RunState:
+        if self._running:
+            raise ValueError("This Runtime already has an active driver")
+        self._running = True
+        self._cancel_requested = any(i.kind == "cancel" for i in self.queued_inputs)
         started = perf_counter()
         try:
+            policy = self.executor.permissions
+            self.emit("permissions", {"fingerprint": policy_fingerprint(policy), "policy": policy.model_dump(),
+                                      "read_concurrency": self.read_concurrency})
+            for name in self.registry.names():
+                backend = getattr(self.registry.get(name), "backend", None)
+                if backend:
+                    await backend.prepare()
+                    self.emit("isolation", {"backend": "docker", "root": backend.relative_root,
+                                            "image_id": backend.image_id, "network": "none"})
             return await self._run_impl()
+        except asyncio.CancelledError:
+            if self.state.status == Status.RUNNING:
+                self.controller.human(self.state, self.history, "interrupt")
+            raise
+        except Exception:
+            self.state.status = Status.FAILED
+            self.state.stop_reason = "runtime_error"
+            raise
         finally:
+            self._running = False
             self.metrics.active_seconds += perf_counter() - started
+            kind = {Status.COMPLETED: "completed", Status.WAITING_USER: "paused",
+                    Status.STOPPED: "cancelled" if self.state.stop_reason == "user_interrupted" else "stopped",
+                    Status.FAILED: "failed"}.get(self.state.status, "paused")
+            self.emit(kind, {"reason": self.state.stop_reason or self.state.status.value,
+                             "pending_action_ids": self.pending_action_ids})
             self.save()
             if self.store:
                 from kong.reporting import run_report
@@ -248,8 +387,15 @@ class Runtime:
         started = perf_counter()
         self.metrics.model_calls += 1
         try:
-            return await self.model.generate(context)
+            self._last_delta = 0
+            if hasattr(self.model, "on_stream"):
+                self.model.on_stream = self._stream_progress
+            self._model_task = asyncio.create_task(self.model.generate(context))
+            self.emit("model_waiting", {"reason": "waiting_for_validated_model_decision"})
+            return await self._model_task
         finally:
+            self._model_task = None
+            self.emit("model_finished", {})
             self.metrics.model_seconds += perf_counter() - started
             usage = getattr(self.model, "last_usage", {})
             clean = {k:v for k,v in usage.items() if k in {"prompt_tokens", "completion_tokens", "total_tokens"}
@@ -260,12 +406,19 @@ class Runtime:
                 self.metrics.tokens[key] = self.metrics.tokens.get(key, 0) + value
 
     async def _run_impl(self) -> RunState:
+        if self.pending_action_id and self.state.status == Status.RUNNING:
+            self.state.status = Status.WAITING_USER
+            self.state.pending_question = "仍有结果未知的动作；请先 /resolve。"
         if self._record_initial_goal and self.state.status == Status.RUNNING:
             self.history.append("human", self.state.turn_count, command="goal", text=self.state.goal)
             self._record_initial_goal = False
         self.save()
+        retries = sum(e.kind == "model_retry" for e in self.run_events)
         try:
-            while self.controller.start_turn(self.state):
+            while self.state.status == Status.RUNNING:
+                self._apply_inputs()
+                if not self.controller.start_turn(self.state):
+                    break
                 # Save the consumed turn before the request, including failed HTTP requests.
                 self.save()
                 try:
@@ -273,8 +426,16 @@ class Runtime:
                                        if isinstance(self.registry.get(n), SkillTool)), None)
                     self.context_engine.supplemental_items = (skill_tool.catalog.context_items(self.history, self.state.run_id)
                                                               if skill_tool else [])
+                    if self.constraints or self.state.requires_replan or self.executor.permissions != PermissionPolicy():
+                        self.context_engine.supplemental_items.append(ContextItem(category="current_user", priority=0,
+                            content=json.dumps({"active_constraints": self.constraints,
+                            "permission_policy": self.executor.permissions.model_dump(),
+                            "input_rule": "Newest goal/constraints override stale decisions; use fresh evidence for a changed goal."},
+                            ensure_ascii=False), sources=[ContextSource(kind="state", run_id=self.state.run_id)]))
                     context = await self.context_engine.prepare(thread=self.thread, state=self.state,
                                                                 history=self.history, tools=self.registry.definitions())
+                    if self._apply_inputs():
+                        continue
                     decision = await self._generate(context)
                 except ModelError as exc:
                     previous = next((e for e in reversed(self.history.events)
@@ -283,11 +444,26 @@ class Runtime:
                                         diagnostics=getattr(exc, "diagnostics", []), category=exc.category,
                                         retryable=exc.retryable, status_code=exc.status_code,
                                         fatal_configuration=exc.fatal_configuration)
+                    self.emit("model_error", {"category": exc.category, "retryable": exc.retryable,
+                                              "status_code": exc.status_code, "error": str(exc)})
+                    if self._apply_inputs():
+                        continue
                     if isinstance(exc, ModelProtocolError) and (previous is None or previous.type != "model_error"):
                         self.history.append("feedback", self.state.turn_count,
                             error=str(exc), instruction="No action executed. Correct the JSON format on the next budgeted turn.")
-                        self.on_event("transition", {"turn":self.state.turn_count, "reason":"protocol_repair", "control":"continue"})
+                        self.emit("transition", {"turn":self.state.turn_count, "reason":"protocol_repair", "control":"continue"})
                         self.save()
+                        continue
+                    if (not isinstance(exc, ModelProtocolError) and exc.retryable and retries < self.model_retry_limit
+                            and self.state.turn_count < self.state.hard_turn_limit):
+                        retries += 1
+                        delay = max(0.1, min(5, exc.retry_after or 0.25 * 2 ** (retries - 1)))
+                        self.emit("model_retry", {"category": exc.category, "attempt": retries,
+                                                  "limit": self.model_retry_limit, "delay_seconds": delay})
+                        try:
+                            await asyncio.wait_for(self._input_signal.wait(), timeout=delay)
+                        except TimeoutError:
+                            pass
                         continue
                     self.state.status = Status.WAITING_USER
                     self.state.pending_question = str(exc) + " 修正服务配置后回复 /answer 重试。"
@@ -299,6 +475,9 @@ class Runtime:
                     self.state.stop_reason = "unexpected_model_error"
                     self.save()
                     break
+                if self._apply_inputs():
+                    self.emit("decision_discarded", {"reason": "new_user_input"})
+                    continue
                 self.history.append("decision", self.state.turn_count, decision=decision.model_dump(mode="json"))
                 proposal_provider = getattr(self.model, "take_memory_delta", None)
                 if proposal_provider:
@@ -317,7 +496,15 @@ class Runtime:
                 else:
                     if context_only:
                         for action in decision.actions:
-                            result = await self.executor.execute(ToolCall(name=action.name, arguments=action.arguments))
+                            if self._apply_inputs():
+                                self.emit("batch_revoked", {"reason": "new_user_input"})
+                                break
+                            skill_id = f"context{1 + self.metrics.tool_calls}"
+                            tool_wall_start = perf_counter()
+                            try:
+                                result = await self._execute_timed(skill_id, action)
+                            finally:
+                                self.metrics.tool_wall_seconds += perf_counter() - tool_wall_start
                             self.history.append("feedback", self.state.turn_count, skill_action=action.model_dump(),
                                                 skill_result=result.model_dump())
                             self.save()
@@ -340,24 +527,31 @@ class Runtime:
                         transition = (Transition(control="continue", reason="skill_context_loaded")
                                       if self.state.pending_approval else self.controller.checkpoint(self.state))
                     elif isinstance(decision, (Act, NeedDiscovery)):
-                        await self._actions(decision)
-                        transition = self.controller.transition(self.state, decision, self.history)
+                        revoked = await self._actions(decision)
+                        if revoked:
+                            transition = Transition(control="pause" if self.state.status == Status.WAITING_USER else
+                                "stop" if self.state.status == Status.STOPPED else "continue", reason="batch_revoked")
+                        else:
+                            transition = self.controller.transition(self.state, decision, self.history)
                     else:
                         transition = self.controller.transition(self.state, decision, self.history)
                 self.history.append("feedback", self.state.turn_count, transition=transition.model_dump())
-                self.on_event("transition", {"turn": self.state.turn_count, **transition.model_dump()})
+                self.emit("transition", {"turn": self.state.turn_count, **transition.model_dump()})
                 self.save()
                 await self.context_engine.commit(state=self.state, history=self.history)
         except asyncio.CancelledError:
-            self.controller.human(self.state, self.history, "interrupt")
+            self._apply_inputs()
+            if self.state.status == Status.RUNNING:
+                self.controller.human(self.state, self.history, "interrupt")
             self.save()
             await self.context_engine.commit(state=self.state, history=self.history)
-            raise
+            if not self._cancel_requested:
+                raise
         self.save()
         await self.context_engine.commit(state=self.state, history=self.history)
         return self.state
 
-    async def _actions(self, decision: Act | NeedDiscovery) -> None:
+    async def _actions(self, decision: Act | NeedDiscovery) -> bool:
         if any(action.name in self.registry.names() and isinstance(self.registry.get(action.name), SkillTool)
                for action in decision.actions):
             self.history.append("feedback", self.state.turn_count, error="Separate skill context operations from environment actions; batch rejected.")
@@ -373,37 +567,112 @@ class Runtime:
                 except KeyError:
                     self.history.append("feedback", self.state.turn_count, error="Unknown discovery tool; batch rejected.")
                     return
-        for action in decision.actions:
-            # Include unresolved intents so crash recovery can never reuse an evidence ID.
-            action_id = f"a{1 + sum(event.type == 'action_intent' for event in self.history.events)}"
-            self.pending_action_id = action_id
-            self.history.append("action_intent", self.state.turn_count, action_id=action_id, action=action.model_dump())
-            self.save()
-            if action.name in {"process_exec", "terminal", "browser", "mcp"}:
-                self.on_event("action_started", {"id": action_id, "tool": action.name})
-            versions_before = capture_versions(self.workspace, self.state, action)
-            result = await self.executor.execute(ToolCall(name=action.name, arguments=action.arguments))
-            progress_output = (self.registry.get(action.name).progress_output(result.output)
-                               if action.name in self.registry.names() else result.output)
-            observation = Observation(
-                action_id=action_id, turn=self.state.turn_count, action=action,
-                success=result.success, output=result.output, error=result.error,
-                fingerprint=digest(action.model_dump()),
-                # Reading a different required file is new evidence even if its text
-                # matches another file. The same source+result cannot earn another lease.
-                output_hash=digest({"action": action.model_dump(), "output": progress_output}),
-                evidence_version=2, artifact_versions=capture_versions(self.workspace, self.state, action),
-                artifact_versions_before=versions_before,
-                effect=action_effect(action, self.registry),
-            )
-            self.history.observations.append(observation)
-            self.history.append("observation", self.state.turn_count, observation=observation.model_dump(mode="json"))
-            self.pending_action_id = None
-            ProgressGate.observe(self.state, self.history)
-            self.save()
-            self.on_event("observation", {"id": action_id, "tool": action.name, "success": result.success})
-            if not result.success or ProgressGate.trigger(self.state) in {"consecutive_failures", "repeated_actions"}:
+        index = 0
+        while index < len(decision.actions):
+            if self._apply_inputs():
+                self.emit("batch_revoked", {"remaining": len(decision.actions) - index, "reason": "new_user_input"})
+                return True
+            group = [decision.actions[index]]
+            if self._parallel_read(group[0]):
+                while index + len(group) < len(decision.actions) and len(group) < self.read_concurrency:
+                    candidate = decision.actions[index + len(group)]
+                    if not self._parallel_read(candidate) or candidate in group:
+                        break
+                    group.append(candidate)
+            work = []
+            for action in group:
+                # No await between the safe input boundary and intent allocation.
+                # A callback may submit input, so check before allocating every member.
+                if self.queued_inputs:
+                    break
+                action_id = f"a{1 + sum(event.type == 'action_intent' for event in self.history.events)}"
+                self.pending_action_ids.append(action_id)
+                self.pending_action_id = self.pending_action_ids[0]
+                self.history.append("action_intent", self.state.turn_count, action_id=action_id, action=action.model_dump())
+                versions = capture_versions(self.workspace, self.state, action)
+                self.emit("action_started", {"id": action_id, "tool": action.name,
+                                            "operation": action.arguments.get("operation", "run")})
+                work.append((action_id, action, versions))
+            tool_wall_start = perf_counter()
+            tasks = [asyncio.create_task(self._execute_timed(action_id, action)) for action_id, action, _ in work]
+            if len(work) == 1 and work[0][1].name in {"process_exec", "terminal", "mcp", "browser"}:
+                self._active_cancellable_task = tasks[0]
+            gathering = asyncio.gather(*tasks)
+            cancelled = False
+            try:
+                results = await asyncio.shield(gathering) if len(group) > 1 else await gathering
+            except asyncio.CancelledError:
+                if len(group) == 1:
+                    raise  # The saved intent remains unknown; never replay automatically.
+                cancelled = True
+                results = await gathering  # Drain every started read; no results are dropped.
+            finally:
+                self._active_cancellable_task = None
+                self.metrics.tool_wall_seconds += perf_counter() - tool_wall_start
+            # Persist in intent order even when completion order differs.
+            for (action_id, action, versions), result in zip(work, results):
+                self._record_result(action_id, action, versions, result)
+            index += len(work)
+            if cancelled:
+                raise asyncio.CancelledError()
+            if self._apply_inputs():
+                self.emit("batch_revoked", {"remaining": len(decision.actions) - index, "reason": "new_user_input"})
+                return True
+            if self.pending_action_ids:
+                self.state.status = Status.WAITING_USER
+                self.state.pending_question = "动作结果未知，请检查环境后逐项 /resolve；不会自动重试。"
+                self.emit("action_unknown", {"ids": self.pending_action_ids})
+                return True
+            if any(not r.success for r in results) or ProgressGate.trigger(self.state) in {"consecutive_failures", "repeated_actions"}:
                 break
+        return False
+
+    def _parallel_read(self, action):
+        return (action.name in {"read_file", "list_dir", "search_files"} and action.name in self.registry.names()
+                and self.registry.get(action.name).read_only and self.registry.get(action.name).parallel_safe)
+
+    async def _execute_timed(self, action_id, action):
+        operation = action.arguments.get("operation", "run")
+        timing = ToolTiming(action_id=action_id, tool=action.name,
+                            operation=operation if isinstance(operation, str) else "invalid")
+        self.metrics.tool_calls += 1
+        self.metrics.tool_timings.append(timing)
+        self.save()  # A crash during execution leaves an explicitly unknown duration.
+        started = perf_counter()
+        try:
+            result = await self.executor.execute(ToolCall(name=action.name, arguments=action.arguments))
+            timing.success = result.success
+            timing.outcome_unknown = result.outcome_unknown
+            return result
+        except asyncio.CancelledError:
+            timing.cancelled = True
+            timing.outcome_unknown = (action.name not in self.registry.names()
+                                      or not self.registry.get(action.name).read_only)
+            raise
+        finally:
+            timing.elapsed_seconds = perf_counter() - started
+            self.metrics.tool_seconds += timing.elapsed_seconds
+
+    def _record_result(self, action_id, action, versions_before, result):
+        progress_output = (self.registry.get(action.name).progress_output(result.output)
+                           if action.name in self.registry.names() else result.output)
+        observation = Observation(action_id=action_id, turn=self.state.turn_count, action=action,
+            success=result.success, output=result.output, error=result.error, outcome_unknown=result.outcome_unknown,
+            fingerprint=digest(action.model_dump()),
+            output_hash=digest({"action": action.model_dump(), "output": progress_output}),
+            evidence_version=2, artifact_versions=capture_versions(self.workspace, self.state, action),
+            artifact_versions_before=versions_before, effect=action_effect(action, self.registry))
+        self.history.observations.append(observation)
+        self.history.append("observation", self.state.turn_count, observation=observation.model_dump(mode="json"))
+        if not result.outcome_unknown:
+            self.pending_action_ids.remove(action_id)
+        self.pending_action_id = next(iter(self.pending_action_ids), None)
+        ProgressGate.observe(self.state, self.history)
+        timing = next((t for t in reversed(self.metrics.tool_timings) if t.action_id == action_id), None)
+        self.emit("action_finished", {"id": action_id, "tool": action.name, "success": result.success,
+                                      "outcome_unknown": result.outcome_unknown,
+                                      "elapsed_seconds": timing.elapsed_seconds if timing else None})
+        self.emit("observation", {"id": action_id, "tool": action.name, "success": result.success})
 
 
 async def run_agent(user_input: str, model: Model, registry: ToolRegistry,

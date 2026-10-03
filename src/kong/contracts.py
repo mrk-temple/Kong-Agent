@@ -110,6 +110,16 @@ class Criterion(Contract):
         return self
 
 
+class ToolTiming(Contract):
+    action_id: str
+    tool: str
+    operation: str = "run"
+    elapsed_seconds: float | None = Field(default=None, ge=0)
+    success: bool | None = None
+    cancelled: bool = False
+    outcome_unknown: bool = False
+
+
 class RunMetrics(Contract):
     active_seconds: float = 0
     model_seconds: float = 0
@@ -117,6 +127,11 @@ class RunMetrics(Contract):
     usage_calls: int = 0
     tokens: dict[str, int] = Field(default_factory=dict)
     legacy_unknown: bool = False
+    tool_calls: int = Field(default=0, ge=0)
+    tool_seconds: float = Field(default=0, ge=0)
+    tool_wall_seconds: float = Field(default=0, ge=0)
+    tool_timings: list[ToolTiming] = Field(default_factory=list)
+    tool_timing_complete: bool = True
 
 
 class PlanStep(Contract):
@@ -159,6 +174,7 @@ class Approval(Contract):
 
 
 class RunState(Contract):
+    requires_replan: bool = False
     run_id: str = Field(default_factory=lambda: uuid4().hex)
     goal: str = Field(min_length=1)
     mode: Mode = Mode.AUTO
@@ -240,6 +256,7 @@ class Observation(Contract):
     success: bool
     output: Any = None
     error: str | None = None
+    outcome_unknown: bool = False
     fingerprint: str
     output_hash: str
     evidence_version: Literal[1, 2] = 1

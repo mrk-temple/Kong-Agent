@@ -119,6 +119,14 @@ class ContextEngine:
                 finally:
                     self.store, self.history_selector = store, selector
         context = self.builder.build(state, history, tools)
+        original_message_count = len(context.messages)
+        mandatory = [item for item in self.supplemental_items if item.category == "current_user"]
+        for mandatory_item in mandatory:
+            context.messages.append({"role": "user", "content": mandatory_item.content})
+        if mandatory:
+            from kong.continuity.compiler import token_estimate, ContextBudgetExceeded
+            if sum(token_estimate(m["content"]) for m in context.messages) > self.budget.input_tokens:
+                raise ContextBudgetExceeded("Mandatory runtime input exceeds the context budget")
         recent, notes = (self.history_selector.select(thread, state.run_id)
                          if self.history_selector else ([], []))
         working_set = self.working_set_builder.build(state, history)
@@ -128,7 +136,10 @@ class ContextEngine:
         for index, message in enumerate(context.messages):
             category, priority = "custom", 2
             sources = [ContextSource(kind="custom", run_id=state.run_id)]
-            if legacy:
+            if index >= original_message_count:
+                supplemental = mandatory[index - original_message_count]
+                category, priority, sources = supplemental.category, supplemental.priority, supplemental.sources
+            elif legacy:
                 category, priority = [("system", 0), ("runtime_and_tools", 0), ("goal", 0), ("audit_and_evidence", 2)][index]
                 sources = {
                     0: [ContextSource(kind="system")],

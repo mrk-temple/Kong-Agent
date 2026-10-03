@@ -107,7 +107,7 @@ class BrowserTool(Tool):
                 raise
             except Exception as exc:
                 self.refs.clear()
-                return ToolResult(success=False, error="Browser operation failed (" + type(exc).__name__ +
+                return ToolResult(success=False, outcome_unknown=kw["operation"] in {"click", "fill", "press", "open"}, error="Browser operation failed (" + type(exc).__name__ +
                     "). Check dependencies (uv sync --extra integrations; python -m playwright install chromium), page/ref and URL. "
                     "Take a fresh snapshot before retrying an action; submissions may have happened.")
 

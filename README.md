@@ -120,13 +120,15 @@ uv run kong --profile relay run "读取 pyproject.toml，说明项目依赖"
 | 能力 | 启用方式与范围 |
 |---|---|
 | 文件操作 | 默认启用；工作区内列目录、文本读取、搜索、写入与精确替换 |
-| 本机命令 | `--allow-process`；有超时和输出限制 |
+| 本机命令 | `--allow-process`；有超时和输出限制，可选 Docker 专用目录隔离 |
 | 交互终端 | `--allow-terminal`；Windows ConPTY，支持多轮输入与读取 |
 | 浏览器 | `--allow-browser`；独立 Chromium、DOM 操作、截图 |
 | MCP | `--allow-mcp`；显式配置的 stdio / Streamable HTTP 服务 |
 | 公开网页研究 | `--web live`；搜索、抓取与来源快照回读，搜索需单独配置服务 |
 | 技能 | 随包提供工作区分析、代码、Word、PDF、表格、幻灯片、技能编写、研究共八个技能 |
 | 连续性 | 同 Thread 对话、带来源记忆、任务摘要、暂停与恢复 |
+| 运行交互 | `--stream` 流式接收进度；`/add`、`/goal`、`/cancel`；版本化事件与输入队列 |
+| 权限与并发 | `--permissions` 操作/资源策略；`--read-concurrency 1..8` 独立文件读取并发 |
 
 可选组件：
 
@@ -158,12 +160,56 @@ FAST / AUTO / PLAN 共用执行循环，模型调用上限分别为 4 / 40 / 60�
 必要时用 `/resolve` 说明。恢复任务不会复活旧终端、浏览器页面或 MCP 连接；
 流程与命令见 [RECOVERY](RECOVERY.md)，快照与报告字段见 [ARCHITECTURE](ARCHITECTURE.md)。
 
+## V0.4B 本地候选：运行中纠偏
+
+```powershell
+uv run kong --stream --read-concurrency 3 run "读取资料并生成汇总"
+# 运行期间输入：
+/add 汇总只包含已支付订单
+/goal 改为先检查数据缺失情况，提交新方案
+/cancel
+```
+
+`/add` 补充约束，`/goal` 更换目标并撤销旧验收条件；两者在模型决策返回后、下一动作开始前生效，撤销未执行的旧批次。已有计划需重新提案和批准。`/cancel` 停止新动作，已开始的普通写入先收尾；进程等可管理动作会取消并清理。结果未知的动作保留记录，恢复需逐项 `/resolve`。关闭标准输入不会自动取消任务。
+
+`--events-json` 输出版本 1 的 JSON 行事件；`--stream` 只显示接收进度，完整响应结束且 JSON 合同通过校验后才执行动作。可重试的模型网络故障默认最多恢复 2 次（`--model-retries 0..3`），消耗原模型预算，恢复后不重置。认证、账户和配置错误直接暂停；工具副作用不自动重试。
+
+权限文件示例（保存为本地 `permissions.json`，需预先建立 `job` 目录）：
+
+```json
+{"read_roots":["job"],"write_roots":["job"],"operations":{"browser":["snapshot"]},"mcp_servers":["local_demo"],"mcp_tools":{"local_demo":["add"]}}
+```
+
+```powershell
+uv run kong --permissions permissions.json run "汇总 job 内资料"
+uv run kong --permissions permissions.json --allow-process --sandbox docker --sandbox-root job --sandbox-image python:3.12-slim --web disabled run "在 job 内运行 Python 数据处理并核验"
+```
+
+Docker 必须预先运行且本地已安装所指定可信 Linux 镜像；不会自动拉取镜像或回退宿主。模型请求在宿主进行，`process_exec` 的工作负载只有专用目录挂载、无网络、只读容器根目录及受限子进程。Docker 模式禁用终端、浏览器、MCP 和实时网页工具。文件工具由应用层权限检查约束；这些检查不防御恶意宿主并发修改。具体范围见 [ARCHITECTURE](ARCHITECTURE.md)。
+
+本轮指定 MiMo 模型时，可在本地配置添加以下 profile，并在当前会话设置 `MIMO_API_KEY`：
+
+```toml
+[profiles.mimo]
+base_url = "https://api.xiaomimimo.com/v1"
+model = "mimo-v2.6-flash"
+api_key_env = "MIMO_API_KEY"
+json_mode = true
+stream = true
+thinking_mode = "disabled"
+timeout = 90
+max_tokens = 4096
+context_window_tokens = 65536
+```
+
+使用 `--config kong.local.toml --profile mimo` 选择该配置。`thinking_mode` 与旧 `enable_thinking` 参数互斥。供应商、模型与计费入口必须显式选择，故障不会触发替换。
+
 ## 已知边界
 
 - 本机命令、终端和浏览器具有当前用户的权限，**不是操作系统或网络沙箱**；文件工具的路径限制不约束任意程序。
 - 文件工具主要处理 UTF-8 文本；读取/修改最多 256 KB。技能提供流程与基础检查，不保证 OCR、视觉排版或公式重算。
 - 浏览器不继承个人登录态；没有浏览器视觉理解、专用 iframe 定位或上传下载管理。
-- 模型层尚无流式输出或供应商原生工具调用；上下文预算使用估算值，报告用量仅来自实际返回值（缺失时显示“未知”）。
+- 流式响应只用于接收进度，不支持供应商原生工具调用；上下文预算使用估算值，报告用量仅来自实际返回值（缺失时显示“未知”）。
 - 不提供多 Agent、网页产品界面、云同步、后台调度或长期无人值守可靠性承诺。
 
 ## 如何验证
@@ -179,11 +225,13 @@ uv build
 uv run python examples/verify_release_install.py dist/kong_agent-0.3.0-py3-none-any.whl
 ```
 
-工程测试、固定模型流程测试和真实模型任务结果分开记录。当前完整工程测试基线为
-**253 passed / 1 skipped**（唯一跳过：主机无符号链接权限）；历史 V0.3 收尾记录 226/1、
+工程测试、固定模型流程测试和真实模型任务结果分开记录。本地 V0.4B 候选完整工程回归为
+**379 passed / 2 skipped**（包含已安装镜像的真实 Docker 测试；两项跳过因主机无符号链接权限）。未配置 `KONG_TEST_DOCKER_IMAGE` 时另跳过两项真实 Docker 检查。历史 V0.3 基线 253/1 与收尾记录 226/1、
 隔离基线 238/1 与阶段收尾 251/1、252/1 属旧结果，均不是任务成功率。CI 工作流见
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。评测任务、分母、判分与结果边界见
 [EVALUATION](EVALUATION.md)（题目定义在 [`src/kong/evaluation/specs.py`](src/kong/evaluation/specs.py)）。
+
+`python examples/interactive_comparison.py --output <新目录>` 记录相同 6 个读取任务的串行/并发结果与运行中追加约束。它使用固定模拟延迟，只衡量调度机制；真实模型质量与人工纠偏负担须另测。`python examples/runtime_timing.py --output <新目录> --repetitions 3 --docker-image <已安装可信镜像>` 用固定决策实际执行文件与进程任务，分开测量工具调用、隔离启动/清理和 Runtime 其余耗时，排除供应商等待。CLI 摘要及任务报告保留逐次工具耗时与累计/批次耗时，历史缺失项保持未知。本候选未发布，版本号仍为 0.3.0。
 
 许可证确定前，发布整理脚本仅生成待审阅候选文件，不向远端上传：
 

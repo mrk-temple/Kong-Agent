@@ -44,9 +44,17 @@ class ProcessExecTool(Tool):
     environment = "local_process"
     execution_timeout = 315
 
-    def __init__(self, workspace: Workspace, *, enabled: bool = False):
+    def __init__(self, workspace: Workspace, *, enabled: bool = False, backend=None):
         self.workspace = workspace
         self.enabled = enabled
+        self.backend = backend
+        if backend:
+            self.environment = "docker"
+            self.effects = ("process_exec", "local_write")
+            self.description = ("Run argv in the selected Docker image, with network disabled and a dedicated resource directory "
+                "mounted at /workspace. cwd must be under " + backend.relative_root +
+                ". Container root is read-only; /tmp is temporary. No host execution fallback. "
+                "Use container executables such as python, not host absolute executable paths. Verify resulting artifacts.")
 
     async def run(self, **kwargs: Any) -> ToolResult:
         if not self.enabled:
@@ -55,6 +63,9 @@ class ProcessExecTool(Tool):
         if not cwd.is_dir():
             return ToolResult(success=False, error="cwd must be an existing workspace directory")
         argv = list(kwargs["argv"])
+        if self.backend:
+            return await self.backend.execute(argv, cwd, timeout_seconds=kwargs["timeout_seconds"],
+                max_output_bytes=kwargs["max_output_bytes"], encoding=kwargs["encoding"])
         if argv[0] == "python":
             argv[0] = sys.executable
         if os.name == "nt":

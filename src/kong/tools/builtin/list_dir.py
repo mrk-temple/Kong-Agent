@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ class ListDirArgs(BaseModel):
 
 class ListDirTool(Tool):
     read_only = True
+    parallel_safe = True
     name = "list_dir"
     description = "List files and directories in a directory."
     args_model = ListDirArgs
@@ -26,6 +28,9 @@ class ListDirTool(Tool):
         self.workspace = workspace
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        return await asyncio.to_thread(self._run, **kwargs)
+
+    def _run(self, **kwargs: Any) -> ToolResult:
         path = kwargs["path"]
 
         try:

@@ -109,6 +109,12 @@ class CompletionGate:
 
     def check(self, state: RunState, decision: FinalResponse, history: History) -> list[str]:
         problems: list[str] = []
+        changed_goal = max((i for i, e in enumerate(history.events)
+                            if e.type == "human" and e.payload.get("command") == "input_goal"), default=-1)
+        if changed_goal >= 0 and state.requires_evidence:
+            current_ids = {e.payload.get("action_id") for e in history.events[changed_goal + 1:] if e.type == "action_intent"}
+            if not decision.evidence_ids or not set(decision.evidence_ids) <= current_ids:
+                problems.append("Changed goals require fresh evidence produced after the goal input.")
         self.file_versions = {}
         if state.requires_evidence and not history.observations:
             problems.append("An environment task cannot complete without a successful tool observation.")

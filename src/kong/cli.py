@@ -29,6 +29,9 @@ HELP = """命令：
   /resolve <实际情况>    确认中断动作的实际情况，允许继续检查
   /reject               拒绝并停止任务
   /resume               恢复被用户中断的任务（不重置预算）
+  /add <约束>           运行中补充约束；下一安全边界生效并撤销旧批次
+  /goal <新目标>        运行中替换目标；撤销旧计划与旧验收条件
+  /cancel               取消模型等待；已开始的动作收尾后停止，不再开始新动作
   /status /history      查看状态或最近记录
   /context              查看最近一次实际模型上下文、预算与来源
   /skills               查看技能目录和缺失依赖
@@ -44,7 +47,19 @@ HELP = """命令：
 
 
 def event_output(kind: str, data: dict) -> None:
-    if kind == "action_started":
+    if kind == "model_waiting":
+        print("  等待模型生成完整决策；运行中可输入 /add、/goal、/cancel。", flush=True)
+    elif kind == "model_output":
+        print(f"  正在接收模型输出（{data['received_chars']} 字符）；尚未授权动作。", flush=True)
+    elif kind == "model_retry":
+        print(f"  模型 {data['category']}：{data['delay_seconds']:.2f} 秒后重试 {data['attempt']}/{data['limit']}。", flush=True)
+    elif kind in {"input_queued", "input_applied"}:
+        print(f"  输入 {data['kind']}：{'已排队' if kind == 'input_queued' else '已生效'}。", flush=True)
+    elif kind == "action_unknown":
+        print("  动作结果未知：" + ", ".join(data['ids']) + "；检查环境后 /resolve。", flush=True)
+    elif kind in {"completed", "paused", "cancelled", "stopped", "failed"}:
+        print(f"  运行状态：{kind}（{data['reason']}）。", flush=True)
+    elif kind == "action_started":
         print(f"  [{data['id']}] 正在使用 {data['tool']}；Ctrl+C 可中断。", flush=True)
     elif kind == "observation":
         print(f"  [{data['id']}] {data['tool']}：{'成功' if data['success'] else '失败'}")
@@ -95,6 +110,10 @@ def print_status(runtime: Runtime) -> None:
     verified = sum(c["verified"] for c in report["criteria"])
     metrics = report["metrics"]
     print(f"验收：{verified}/{len(report['criteria'])} 个显式条件通过；执行耗时 {metrics['active_seconds']:.1f} 秒。")
+    timing = metrics["tool_timing_complete"]
+    print(f"模型等待 {metrics['model_seconds']:.3f} 秒 · 工具调用 {metrics['tool_calls']} 次 · "
+          + (f"工具批次等待 {metrics['tool_wall_seconds']:.3f} 秒 · 工具累计 {metrics['tool_seconds']:.3f} 秒 · "
+             f"Runtime 其余耗时 {metrics['runtime_overhead_seconds']:.3f} 秒" if timing else "历史工具耗时不完整"))
     tokens = metrics["tokens"].get("total_tokens")
     print("Token 用量：" + (str(tokens) if tokens is not None else "未知")
           + ("（部分请求未返回用量）" if not metrics["usage_complete"] else ""))
@@ -163,17 +182,24 @@ async def context_command(runtime: Runtime, line: str) -> bool:
     return True
 
 
-async def drive(runtime: Runtime, interactive: bool) -> int:
+async def drive(runtime: Runtime, interactive: bool, reader=None) -> int:
+    from kong.runtime.terminal_input import TerminalInput, run_with_input
+    if interactive and reader is None:
+        reader = TerminalInput()
     while True:
-        await runtime.run()
-        print_status(runtime)
+        if interactive:
+            await run_with_input(runtime, reader)
+        else:
+            await runtime.run()
+        if not getattr(runtime, "events_json", False):
+            print_status(runtime)
         state = runtime.state
         if not interactive or state.status in {Status.COMPLETED, Status.FAILED}:
             return 0 if state.status == Status.COMPLETED else 2
         if state.status == Status.STOPPED and state.stop_reason != "user_interrupted":
             return 2
         try:
-            line = input("\nKong > ").strip()
+            line = (await reader.get("\nKong > ")).strip()
         except EOFError:
             runtime.save()
             return 2
@@ -241,6 +267,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--workspace", type=Path, default=Path.cwd())
     result.add_argument("--config", type=Path, default=Path("kong.local.toml"))
     result.add_argument("--profile", help="TOML model profile: deepseek / relay / local / lmstudio")
+    result.add_argument("--stream", action="store_true", help="启用模型 SSE 流；完整校验前不执行动作")
+    result.add_argument("--events-json", action="store_true", help="以 JSON Lines 输出版本化运行事件（搭配 --no-interactive）")
+    result.add_argument("--read-concurrency", type=int, choices=range(1, 9), default=3)
+    result.add_argument("--model-retries", type=int, choices=range(0, 4), default=2)
+    result.add_argument("--permissions", type=Path, help="操作与资源范围 PermissionPolicy JSON；本次启动重新授权")
+    result.add_argument("--sandbox", choices=["host", "docker"], default="host")
+    result.add_argument("--sandbox-root", help="Docker 挂载的专用工作区子目录")
+    result.add_argument("--sandbox-image", default="python:3.12-slim", help="已在本机安装的可信 Linux 镜像；不自动拉取")
     result.add_argument("--global-memory-db", type=Path, default=Path.home() / ".kong" / "memory.db",
                         help="跨工作区的 GLOBAL 记忆数据库；工作区记忆仍在 .kong/context.db")
     result.add_argument("--project-id", help="PROJECT 记忆隔离标识；未指定时不读取 PROJECT 记忆")
@@ -289,6 +323,15 @@ async def async_main(args) -> int:
     registries = []
     def make_registry(workspace, **kwargs):
         from kong.integrations.config import load_servers
+        if args.sandbox == "docker":
+            from kong.environments.docker import DockerBackend
+            if args.allow_terminal or args.allow_browser or args.allow_mcp:
+                raise ValueError("Docker mode covers process_exec; terminal/browser/MCP require separate backends and are disabled")
+            if kwargs.get("web_config") and kwargs["web_config"].mode != "disabled":
+                raise ValueError("Docker mode requires --web disabled; model transport stays outside the workload sandbox")
+            if not args.sandbox_root or not args.allow_process:
+                raise ValueError("Docker mode requires --allow-process and --sandbox-root")
+            kwargs["process_backend"] = DockerBackend(workspace, args.sandbox_root, args.sandbox_image)
         registry = default_registry(workspace, **kwargs,
             allow_terminal=getattr(args, "allow_terminal", False),
             allow_browser=getattr(args, "allow_browser", False),
@@ -304,6 +347,30 @@ async def async_main(args) -> int:
 
 async def _async_main(args, default_registry) -> int:
     workspace = Workspace(args.workspace)
+    from kong.tools.permissions import load_permissions
+    from kong.runtime.terminal_input import TerminalInput
+    reader = None
+    def get_reader():
+        nonlocal reader
+        if reader is None:
+            reader = TerminalInput()
+        return reader
+    def configure(runtime):
+        runtime.events_json = args.events_json
+        return runtime
+    permissions = load_permissions(args.permissions)
+    runtime_options = dict(permissions=permissions, read_concurrency=args.read_concurrency,
+                           model_retry_limit=args.model_retries)
+    def events(kind, data):
+        if args.events_json:
+            print(json.dumps(data["event"], ensure_ascii=False), flush=True)
+        else:
+            event_output(kind, data)
+    def load_model():
+        config = load_config(args.config, args.profile)
+        if args.stream:
+            config.stream = True
+        return CompatibleModel(config)
     if args.command == "doctor":
         from kong.doctor import diagnose
         report = await diagnose(args)
@@ -395,7 +462,8 @@ async def _async_main(args, default_registry) -> int:
         demo_path.mkdir(parents=True)
         demo_workspace = Workspace(demo_path)
         runtime = Runtime.new("创建一份 Kong V0.1 介绍文件", demo_model(), demo_workspace,
-                              default_registry(demo_workspace), Mode.PLAN, store=store, on_event=event_output, driver="demo")
+                              default_registry(demo_workspace), Mode.PLAN, store=store, on_event=events, driver="demo", **runtime_options)
+        configure(runtime)
         print(f"离线演示工作区：{demo_path}")
         with store.lock(runtime.state.run_id):
             if args.auto_approve:
@@ -403,7 +471,7 @@ async def _async_main(args, default_registry) -> int:
                 print_plan(runtime)
                 runtime.human("approve", revision=runtime.state.plan_revision)
                 return await drive(runtime, False)
-            return await drive(runtime, True)
+            return await drive(runtime, True, get_reader())
     if args.command == "resume":
         with store.lock(args.run_id):
             snapshot = store.load(args.run_id)
@@ -414,31 +482,33 @@ async def _async_main(args, default_registry) -> int:
                 workspace = Workspace(demo_root)
                 model = demo_model(snapshot.state.turn_count)
             else:
-                model = CompatibleModel(load_config(args.config, args.profile))
-            runtime = Runtime.restore(snapshot, model, workspace, default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web)), store=store, on_event=event_output,
-                                      memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id)
+                model = load_model()
+            runtime = Runtime.restore(snapshot, model, workspace, default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web)), store=store, on_event=events,
+                                      memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
+            configure(runtime)
             if runtime.state.status == Status.STOPPED and runtime.state.stop_reason == "user_interrupted" and not runtime.pending_action_id:
                 runtime.human("resume")
-            return await drive(runtime, not args.no_interactive)
-    model = CompatibleModel(load_config(args.config, args.profile))
+            return await drive(runtime, not args.no_interactive, get_reader() if not args.no_interactive else None)
+    model = load_model()
     registry = default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web))
     if args.command == "run":
         runtime = Runtime.new(args.goal, model, workspace, registry, Mode(args.mode), store=store,
-                              thread_id=args.thread, on_event=event_output,
-                              memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id)
+                              thread_id=args.thread, on_event=events,
+                              memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
+        configure(runtime)
         if args.criteria:
             from pydantic import TypeAdapter
             from kong.contracts import Criterion
             runtime.state.success_criteria = TypeAdapter(list[Criterion]).validate_json(args.criteria.read_text(encoding="utf-8-sig"))
         with store.lock(runtime.state.run_id):
-            return await drive(runtime, not args.no_interactive)
+            return await drive(runtime, not args.no_interactive, get_reader() if not args.no_interactive else None)
     # One terminal conversation is a Thread; each goal keeps its own Run budget.
     thread_id = None
     runtime = None
     print("Kong V0.3 · AUTO · 输入目标开始，/skills 查看技能，/context 查看上下文，/quit 退出。")
     while True:
         try:
-            goal = input("\n你 > ").strip()
+            goal = (await get_reader().get("\n你 > ")).strip()
         except EOFError:
             return 0
         if goal == "/quit":
@@ -456,11 +526,13 @@ async def _async_main(args, default_registry) -> int:
             except (ValueError, OSError):
                 print("命令未执行：检查记忆 ID、kind/key/scope 或当前 Thread。")
             continue
-        runtime = Runtime.new(goal, model, workspace, registry, store=store, on_event=event_output,
-                              thread_id=thread_id, memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id)
+        runtime = Runtime.new(goal, model, workspace, registry, store=store, on_event=events,
+                              thread_id=thread_id, memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id,
+                              **runtime_options)
+        configure(runtime)
         thread_id = runtime.thread.thread_id
         with store.lock(runtime.state.run_id):
-            await drive(runtime, True)
+            await drive(runtime, True, get_reader())
 
 
 def main() -> None:

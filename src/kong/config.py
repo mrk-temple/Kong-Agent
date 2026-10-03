@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import tomllib
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -14,13 +15,17 @@ class ModelConfig(Contract):
     model: str = Field(min_length=1)
     api_key: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
     json_mode: bool = True
+    stream: bool = False
     enable_thinking: bool | None = None
+    thinking_mode: Literal["enabled", "disabled"] | None = None
     timeout: float = Field(default=90, gt=0, le=600)
     max_tokens: int = Field(default=4096, ge=128, le=65536)
     context_window_tokens: int = Field(default=65536, gt=0)
 
     @model_validator(mode="after")
     def valid_context_window(self):
+        if self.enable_thinking is not None and self.thinking_mode is not None:
+            raise ValueError("Select only one provider thinking control")
         if self.max_tokens >= self.context_window_tokens:
             raise ValueError("context_window_tokens must exceed max_tokens")
         return self

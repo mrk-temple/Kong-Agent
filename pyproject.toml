@@ -43,6 +43,8 @@ select = ["E4", "E7", "E9", "F"]
 [tool.ruff.lint.per-file-ignores]
 # Script bootstraps sys.path before importing the local package; reordering would break standalone runs.
 "examples/kong_eval.py" = ["E402"]
+"examples/interactive_comparison.py" = ["E402"]
+"examples/runtime_timing.py" = ["E402"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kong"]

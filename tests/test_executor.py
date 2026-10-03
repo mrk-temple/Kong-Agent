@@ -35,7 +35,7 @@ def test_successful_tool_call_returns_tool_result(tmp_path) -> None:
     )
 
     assert isinstance(result, ToolResult)
-    assert result.model_dump() == {"success": True, "output": "hello", "error": None}
+    assert result.model_dump() == {"success": True, "output": "hello", "error": None, "outcome_unknown": False}
 
 
 def test_unknown_tool_returns_failure() -> None:
@@ -77,4 +77,5 @@ def test_execution_error_returns_failure_without_propagating() -> None:
         "success": False,
         "output": None,
         "error": "Execution error: expected failure",
+        "outcome_unknown": True,
     }

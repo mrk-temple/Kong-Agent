@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any
 
@@ -18,11 +19,15 @@ class SearchFilesTool(Tool):
     description = "Literal text search in UTF-8 files, up to 1000 files / 50 matches; reports truncation."
     args_model = SearchFilesArgs
     read_only = True
+    parallel_safe = True
 
     def __init__(self, workspace: Workspace):
         self.workspace = workspace
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        return await asyncio.to_thread(self._run, **kwargs)
+
+    def _run(self, **kwargs: Any) -> ToolResult:
         root = self.workspace.resolve(kwargs.get("path", "."))
         if not root.is_dir():
             return ToolResult(success=False, error="Search path must be an existing directory")

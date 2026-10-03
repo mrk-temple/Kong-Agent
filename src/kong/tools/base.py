@@ -13,6 +13,7 @@ class ToolResult(BaseModel):
     success: bool
     output: Any = None
     error: str | None = None
+    outcome_unknown: bool = False
 
 
 class ToolDefinition(BaseModel):
@@ -35,6 +36,7 @@ class Tool(ABC):
     effects: tuple[str, ...] | None = None
     environment: str = "workspace"
     execution_timeout: float | None = None
+    parallel_safe: bool = False
 
     def progress_output(self, output: Any) -> Any:
         return output

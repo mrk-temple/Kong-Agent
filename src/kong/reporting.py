@@ -47,11 +47,20 @@ def run_report(runtime):
     metrics = runtime.metrics.model_dump()
     metrics["active_seconds"] = round(metrics["active_seconds"], 3)
     metrics["model_seconds"] = round(metrics["model_seconds"], 3)
+    metrics["runtime_overhead_seconds"] = (round(max(0, runtime.metrics.active_seconds -
+        runtime.metrics.model_seconds - runtime.metrics.tool_wall_seconds), 6)
+        if runtime.metrics.tool_timing_complete else None)
+    metrics["timing_scope"] = ("Active driver time excludes time paused for humans and final report I/O. Model time includes request/stream and its event I/O. "
+        "Tool elapsed is executor validation/authorization/execution/cleanup, excluding timing checkpoint I/O; cumulative time sums overlapping calls. "
+        "Tool wall time measures batch dispatch/checkpoint/execution/draining. Runtime overhead is the remaining active driver time, "
+        "including context, evidence hashes, persistence and retry waits. Historical/inflight missing durations remain unknown.")
     metrics["usage_complete"] = (not metrics["legacy_unknown"] and metrics["usage_calls"] == metrics["model_calls"] == state.turn_count)
     return {"schema_version":1, "generated_at":datetime.now(timezone.utc).isoformat(),
         "run_id":state.run_id, "status":state.status.value, "goal":state.goal,
         "model_claim":state.final_output, "stop_reason":state.stop_reason,
         "pending_question":state.pending_question, "pending_action_id":runtime.pending_action_id,
+        "pending_action_ids":runtime.pending_action_ids,
+        "last_event_sequence":runtime.run_events[-1].sequence if runtime.run_events else None,
         "artifacts":files, "criteria":criteria,
         "unverified":[c["description"] for c in criteria if not c["verified"]] +
             (["未配置确定性验收条件；成功工具证据不等于目标语义正确。"] if not criteria else []),

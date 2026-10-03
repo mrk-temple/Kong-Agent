@@ -151,7 +151,8 @@ class MCPTool(Tool):
             return ToolResult(success=not result.get("is_error", False), output=result,
                               error="MCP server reported an error" if result.get("is_error") else None)
         except (RuntimeError, TimeoutError) as exc:
-            return ToolResult(success=False, error=str(exc) or "MCP request timed out; inspect before retry")
+            return ToolResult(success=False, error=str(exc) or "MCP request timed out; inspect before retry",
+                              outcome_unknown=operation == "call")
 
     async def aclose(self):
         for conn in self.connections.values():

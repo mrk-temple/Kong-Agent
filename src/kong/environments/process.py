@@ -108,4 +108,5 @@ async def execute_process(argv: list[str], cwd: Path, *, timeout_seconds: float,
               **out.fields("stdout", encoding), **err.fields("stderr", encoding)}
     error = ("Process timed out; partial side effects may exist. Inspect outputs before retrying."
              if timed_out else None if exit_code == 0 else f"Process exited with code {exit_code}")
-    return ToolResult(success=exit_code == 0 and not timed_out, output=output, error=error)
+    return ToolResult(success=exit_code == 0 and not timed_out, output=output, error=error,
+                      outcome_unknown=timed_out)

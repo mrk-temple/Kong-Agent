@@ -9,13 +9,13 @@ from kong.workspace import Workspace
 
 
 def default_registry(workspace: Workspace, *, allow_process: bool = False, skill_roots=(), web_config=None,
-                     allow_terminal=False, allow_browser=False, mcp_servers=None) -> ToolRegistry:
+                     allow_terminal=False, allow_browser=False, mcp_servers=None, process_backend=None) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (ListDirTool(workspace), ReadFileTool(workspace), SearchFilesTool(workspace),
                  WriteFileTool(workspace), PatchFileTool(workspace)):
         registry.register(tool)
     if allow_process:
-        registry.register(ProcessExecTool(workspace, enabled=True))
+        registry.register(ProcessExecTool(workspace, enabled=True, backend=process_backend))
     if allow_terminal:
         from kong.integrations.terminal import TerminalTool
         registry.register(TerminalTool(workspace))

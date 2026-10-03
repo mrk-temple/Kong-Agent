@@ -54,7 +54,7 @@ def test_real_write_paths_invalidate_old_check_and_require_recheck(tmp_path, wri
         await runtime._actions(Act(actions=[process(CHECK)]))
         assert not problems(runtime)
         snapshot = runtime.store.load(runtime.state.run_id)
-        assert snapshot.schema_version == 2 and snapshot.history.observations[-1].artifact_versions
+        assert snapshot.schema_version == 3 and snapshot.history.observations[-1].artifact_versions
         restored = Runtime.restore(snapshot, ScriptedModel([]), runtime.workspace, runtime.registry, store=runtime.store)
         assert not problems(restored)
         (tmp_path / "artifact.txt").write_text("changed while offline")

@@ -501,7 +501,8 @@ async def run_suite(output: Path, *, case_ids: list[str] | None = None, repetiti
     if case_ids and set(case_ids) != {case.id for case in selected}:
         raise ValueError("Unknown case ID")
     mode = "live" if live else "fixtures"
-    config_public = ({"model":config.model, "json_mode":config.json_mode,
+    config_public = ({"model":config.model, "json_mode":config.json_mode, "stream":config.stream,
+                      "thinking_mode":config.thinking_mode, "read_concurrency":3, "model_retry_limit":2,
                       "enable_thinking":config.enable_thinking, "timeout":config.timeout,
                       "max_tokens":config.max_tokens, "context_window_tokens":config.context_window_tokens,
                       "endpoint_fingerprint":hashlib.sha256(config.base_url.encode()).hexdigest()[:16],
