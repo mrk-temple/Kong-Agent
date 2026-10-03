@@ -86,7 +86,8 @@ def test_readback_then_mutate_needs_final_version_readback(tmp_path):
     async def scenario():
         await actions(runtime, ("read_file", {"path": "rows.csv"}), ("read_file", {"path": "correction.md"}),
             ("write_file", {"path": "report.json", "content": content}), ("read_file", {"path": "report.json"}),
-            ("write_file", {"path": "report.json", "content": content + "\n"}))
+            ("write_file", {"path": "report.json", "content": content + "\n", "overwrite": True}))
+        assert (tmp_path / "report.json").read_text(encoding="utf-8") == content + "\n"
         assert any("readback" in p for p in complete_problems(runtime))
         await actions(runtime, ("read_file", {"path": "report.json"}))
     asyncio.run(scenario())
@@ -134,11 +135,12 @@ def test_code_verify_then_mutate_cannot_reuse_old_test_observation(tmp_path):
     async def scenario():
         await actions(runtime, ("process_exec", {"argv": ["python", "check.py"]}))
         assert complete_problems(runtime) == []
-        await actions(runtime, ("write_file", {"path": "calc.py", "content": "def total(values):\n    return sum(values)+1\n"}))
+        await actions(runtime, ("write_file", {"path": "calc.py", "content": "def total(values):\n    return sum(values)+1\n", "overwrite": True}))
+        assert runtime.history.observations[-1].success
         assert any("command" in p for p in complete_problems(runtime))
         await actions(runtime, ("process_exec", {"argv": ["python", "check.py"]}))
         assert any("command" in p for p in complete_problems(runtime))
-        await actions(runtime, ("write_file", {"path": "calc.py", "content": "def total(values):\n    return sum(values)\n"}),
+        await actions(runtime, ("write_file", {"path": "calc.py", "content": "def total(values):\n    return sum(values)\n", "overwrite": True}),
             ("process_exec", {"argv": ["python", "check.py"]}))
     asyncio.run(scenario())
     assert complete_problems(runtime) == []
@@ -160,6 +162,29 @@ def test_missing_final_readback_and_external_mutation_fail_closed(tmp_path):
     assert complete_problems(runtime) == []
     (tmp_path / "result.txt").write_text("WRONG", encoding="utf-8")
     assert complete_problems(runtime)
+
+
+def test_partial_read_and_old_source_id_do_not_prove_final_artifact(tmp_path):
+    runtime = make_runtime(tmp_path, {"family": "data", "artifacts": [{"id": "r", "path": "result.txt",
+        "format": "text", "expected_text": "COMPLETE"}]})
+    asyncio.run(actions(runtime, ("write_file", {"path": "result.txt", "content": "COMPLETE"}),
+        ("read_file", {"path": "result.txt", "max_chars": 1})))
+    assert any("readback" in p for p in complete_problems(runtime))
+    asyncio.run(actions(runtime, ("read_file", {"path": "result.txt"})))
+    problems = CompletionGate(runtime.workspace).check(runtime.state, FinalResponse(content="done", evidence_ids=["a1"]), runtime.history)
+    assert any("final evidence binding" in p for p in problems)
+    assert complete_problems(runtime) == []
+
+
+def test_csv_shape_and_count_are_deterministic(tmp_path):
+    runtime = make_runtime(tmp_path, {"family": "data", "artifacts": [{"id": "r", "path": "report.csv",
+        "format": "csv", "csv_columns": ["name", "count"], "row_count": 2}]})
+    asyncio.run(actions(runtime, ("write_file", {"path": "report.csv", "content": "name,count\nA,1\n"}),
+        ("read_file", {"path": "report.csv"})))
+    assert any("artifact:r" in p for p in complete_problems(runtime))
+    asyncio.run(actions(runtime, ("write_file", {"path": "report.csv", "content": "name,count\nA,1\nB,2\n", "overwrite": True}),
+        ("read_file", {"path": "report.csv"})))
+    assert complete_problems(runtime) == []
 
 
 def test_read_before_ask_is_a_visible_requirement_without_implicit_tools(tmp_path):

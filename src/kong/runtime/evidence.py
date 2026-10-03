@@ -83,6 +83,8 @@ def capture_versions(workspace, state, action=None):
     paths = {path for criterion in criteria(state) for path in targets(criterion, state)
              if needs_versions(criterion) and (action is None or action.name not in {"browser", "mcp", "terminal"}
                                               or criterion.artifact_paths)}
+    if state.completion_contract:
+        paths.update(state.completion_contract.version_paths())
     return {path: fingerprint(workspace, path) for path in sorted(paths)}
 
 

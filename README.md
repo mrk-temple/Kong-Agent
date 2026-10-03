@@ -242,6 +242,21 @@ uv run python examples/prepare_public_release.py
 发布范围、扫描证据与剩余门槛见 [PUBLIC_RELEASE_CHECKLIST](PUBLIC_RELEASE_CHECKLIST.md)；
 版本变化见 [CHANGELOG](CHANGELOG.md)。
 
+## 调用方声明完成合同
+
+`kong run "任务目标" --completion-contract contract.json` 可加载版本 1 的 `code` 或 `data` 合同。
+合同由调用方提供，模型无法改写。它补充现有 `--criteria`，把最终文件、保护源、真实命令退出码/输出、JSON 字段类型/允许值、CSV 行数和有限 CSV→JSON 汇总规则变为确定性检查。自然语言目标不会自动转为完整合同。
+
+例如代码修复合同：
+
+```json
+{"version":1,"family":"code","protected_paths":["check.py"],"artifacts":[{"id":"code","path":"calc.py","format":"file","require_readback":false}],"commands":[{"id":"tests","argv":["python","check.py"],"stdout_contains":["checks passed"]}]}
+```
+
+命令通过实际工具执行，Gate 只检查已记录的结果；不会替模型运行检查。命令必须覆盖最终版本，之后修改文件需要重新核验。数据合同支持 UTF-8 `text`/`json`/`csv` 产物，必须有当前完整读回；合同文件验证上限 1 MB，文件工具读回仍受其 256 KB 上限限制。JSON 比较区分类型并拒绝重复键和非标准数值。
+
+保护源初始版本进入快照，恢复不重新基线。运行中替换目标或追加约束会使已绑定合同失效并暂停；调用方通过 `Runtime.set_completion_contract` 更新后明确继续，新保护路径需在新的 Run 开始时声明。未声明任务要求不被自动核验，已有不带合同的 Run 保持原语义。
+
 ## 文档导航
 
 | 文档 | 内容 |

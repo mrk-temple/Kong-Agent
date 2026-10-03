@@ -296,6 +296,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--mode", choices=[m.value for m in Mode], default="auto")
     run.add_argument("--no-interactive", action="store_true")
     run.add_argument("--criteria", type=Path, help="JSON array of Criterion contracts")
+    run.add_argument("--completion-contract", type=Path, help="调用方提供的代码/数据任务完成合同 JSON")
     resume = commands.add_parser("resume", help="恢复一个已保存任务")
     resume.add_argument("run_id")
     resume.add_argument("--no-interactive", action="store_true")
@@ -500,6 +501,10 @@ async def _async_main(args, default_registry) -> int:
             from pydantic import TypeAdapter
             from kong.contracts import Criterion
             runtime.state.success_criteria = TypeAdapter(list[Criterion]).validate_json(args.criteria.read_text(encoding="utf-8-sig"))
+        if args.completion_contract:
+            from kong.completion_contracts import CompletionContract
+            runtime.set_completion_contract(CompletionContract.model_validate_json(
+                args.completion_contract.read_text(encoding="utf-8-sig")))
         with store.lock(runtime.state.run_id):
             return await drive(runtime, not args.no_interactive, get_reader() if not args.no_interactive else None)
     # One terminal conversation is a Thread; each goal keeps its own Run budget.

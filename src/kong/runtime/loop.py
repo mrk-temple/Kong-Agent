@@ -27,6 +27,7 @@ from kong.skills.tools import SkillTool
 from kong.runtime.evidence import capture_versions, action_effect
 from kong.runtime.interaction import RunEvent, RunInput
 from kong.tools.permissions import PermissionPolicy, policy_fingerprint
+from kong.completion_contracts import CompletionContract
 
 
 def digest(value) -> str:
@@ -42,7 +43,7 @@ class Runtime:
                  memory_store=None, project_id: str | None = None,
                  on_event: Callable[[str, dict], None] | None = None, driver: str = "compatible",
                  permissions: PermissionPolicy | None = None, read_concurrency: int = 3,
-                 model_retry_limit: int = 2):
+                 model_retry_limit: int = 2, completion_contract: CompletionContract | dict | None = None):
         self.model = model
         self.workspace = workspace
         self.registry = registry
@@ -112,6 +113,36 @@ class Runtime:
         self._last_delta = 0
         self._cancel_requested = False
         self._active_cancellable_task = None
+        if completion_contract is not None:
+            if history is not None:
+                raise ValueError("Restore preserves its saved completion contract; update it explicitly after restore")
+            self.set_completion_contract(completion_contract)
+
+    def set_completion_contract(self, contract: CompletionContract | dict) -> None:
+        """Host-only binding; never rebaseline already protected bytes on recovery."""
+        if self._running or self.pending_action_ids or self.state.turn_count and not self.state.contract_invalidated:
+            raise ValueError("Bind before execution, or explicitly replace an invalidated host contract while paused")
+        contract = CompletionContract.model_validate(contract).model_copy(deep=True)
+        for path in contract.version_paths():
+            self.workspace.resolve(path)
+        for command in contract.commands:
+            self.workspace.resolve(command.cwd)
+        from kong.runtime.evidence import fingerprint
+        protected = {}
+        for path in contract.protected_paths:
+            if path in self.state.contract_protected_versions:
+                protected[path] = self.state.contract_protected_versions[path]
+            elif self.history.observations:
+                raise ValueError("Cannot establish a new protected-source baseline after actions have run")
+            else:
+                protected[path] = fingerprint(self.workspace, path)
+            if protected[path] in {None, "missing"}:
+                raise ValueError("A protected source must have a readable initial version")
+        self.state.completion_contract = contract
+        self.state.contract_protected_versions = protected
+        self.state.contract_invalidated = False
+        self.history.append("feedback", self.state.turn_count, completion_contract_bound=digest(contract.model_dump(mode="json")))
+        self.save()
 
     @classmethod
     def new(cls, goal: str, model: Model, workspace: Workspace, registry: ToolRegistry,
@@ -238,6 +269,7 @@ class Runtime:
             self._cancel_requested = True
         self._input_signal.clear()
         cancelling = any(item.kind == "cancel" for item in items)
+        contract_changed = self.state.completion_contract is not None and any(item.kind != "cancel" for item in items)
         for item in items:
             previous = {}
             if item.kind == "goal":
@@ -257,10 +289,15 @@ class Runtime:
                 self.state.requires_replan = True
                 self.state.pending_approval = None
                 self.state.current_plan_step = None
+        if contract_changed:
+            self.state.contract_invalidated = True
         if cancelling:
             self.state.status = Status.STOPPED
             self.state.stop_reason = "user_interrupted"
             self.state.pending_question = None
+        elif contract_changed:
+            self.state.status = Status.WAITING_USER
+            self.state.pending_question = "目标或约束已改变。请调用方更新完成合同后明确继续；模型不能替换合同。"
         elif self.state.status == Status.RUNNING:
             self.state.phase = Phase.DECIDE
         self.save()

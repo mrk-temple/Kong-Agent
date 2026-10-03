@@ -71,6 +71,12 @@ class RuntimeController:
         if isinstance(decision, PlanProposal):
             return self.propose(state, decision.plan)
         if isinstance(decision, NeedUserInput):
+            from kong.runtime.completion import ask_problems
+            problems = ask_problems(state, decision, history, self.completion_gate.workspace)
+            if problems:
+                history.append("feedback", state.turn_count, ask_rejected=problems,
+                    instruction="No implicit tool ran. Satisfy the declared read prerequisite, then ask again; preserve permissions and PLAN approval.")
+                return self.checkpoint(state)
             state.pending_question = decision.question
             state.status = Status.WAITING_USER
             return Transition(control="pause", reason="user_input_required")

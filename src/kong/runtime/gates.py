@@ -184,6 +184,16 @@ class CompletionGate:
                 valid = False
             if not valid:
                 problems.append(f"Deterministic verifier failed: {criterion.id} ({criterion.description}).")
+        from kong.runtime.completion import contract_results
+        verified_contract = contract_results(state, history, self.workspace)
+        problems.extend("Contract verifier failed: " + result["id"] + " (" + result["description"] + ")."
+                        for result in verified_contract if not result["verified"])
+        if state.completion_contract and state.completion_contract.allow_completion:
+            final_commands = {"command:" + c.id for c in state.completion_contract.commands if c.verify_final}
+            final_ids = {id_ for r in verified_contract if r["verified"]
+                         and (r["kind"] == "readback" or r["id"] in final_commands) for id_ in r["evidence_ids"]}
+            if not final_ids.intersection(decision.evidence_ids):
+                problems.append("Contract final evidence binding requires an ID from current final readback or verification.")
         return problems
 
     def criteria_results(self, state, history, evidence):
@@ -205,4 +215,5 @@ class CompletionGate:
                             "evidence_ids":result_evidence(criterion, history, self.workspace, state) if criterion.kind == "tool_result" else [],
                             "artifact_versions":{o.action_id: o.artifact_versions for o in history.observations
                                                  if o.action.name == criterion.tool_name and o.artifact_versions}})
-        return results
+        from kong.runtime.completion import contract_results
+        return results + contract_results(state, history, self.workspace)

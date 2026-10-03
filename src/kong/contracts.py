@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from pydantic_core import PydanticCustomError
+from kong.completion_contracts import CompletionContract
 
 
 INVARIANT_MESSAGES = {
@@ -174,6 +175,9 @@ class Approval(Contract):
 
 
 class RunState(Contract):
+    completion_contract: CompletionContract | None = None
+    contract_protected_versions: dict[str, str | None] = Field(default_factory=dict)
+    contract_invalidated: bool = False
     requires_replan: bool = False
     run_id: str = Field(default_factory=lambda: uuid4().hex)
     goal: str = Field(min_length=1)
