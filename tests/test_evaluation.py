@@ -17,6 +17,13 @@ def test_manifest_has_twelve_bounded_tasks_without_research_answer_in_goal():
     assert "3.11" not in source.goal and "'rb'" not in source.goal
 
 
+def test_exact_mcp_fixture_satisfies_new_contract_and_preserves_old_bytes(tmp_path):
+    for group, expected in [("legacy12_a3", b"42\n"), ("legacy12_contracts", b"42")]:
+        root, summary = asyncio.run(run_suite(tmp_path / group, task_set=group, case_ids=["mcp_add"], repetitions=1))
+        assert summary["counts"]["success"] == 1 and summary["complete"]
+        assert (root / "cases/mcp_add/trial-01/workspace/result.txt").read_bytes() == expected
+
+
 def test_offline_trials_are_independent_and_retained(tmp_path):
     root, summary = asyncio.run(run_suite(tmp_path, case_ids=["tool_error_recovery", "unknown_action_restore", "plan_approval"], repetitions=2))
     assert summary["runs"] == 6

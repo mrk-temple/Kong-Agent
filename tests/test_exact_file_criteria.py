@@ -1,5 +1,6 @@
 import asyncio
 import json
+import hashlib
 
 import pytest
 
@@ -61,3 +62,23 @@ def test_runtime_rejects_bad_output_then_allows_repair_without_budget_reset(tmp_
 def test_exact_criteria_require_path_and_explicit_expected_values(kind):
     with pytest.raises(ValueError):
         Criterion(id="missing", description="Missing contract", kind=kind, path="answer.txt")
+
+
+def test_native_verification_report_binds_exact_checked_bytes_and_rechecks_edits(tmp_path):
+    state = RunState(goal="plain value", success_criteria=[Criterion(id="plain", description="Exact plain value",
+        kind="file_equals", path="result.txt", expected_text="42")])
+    gate = CompletionGate(Workspace(tmp_path))
+    (tmp_path / "result.txt").write_bytes(b"42")
+    before = gate.criteria_results(state, History(), {})[0]
+    assert before["verified"] and before["artifact_version"]["sha256"] == hashlib.sha256(b"42").hexdigest()
+    (tmp_path / "result.txt").write_bytes(b"wrong")
+    after = gate.criteria_results(state, History(), {})[0]
+    assert not after["verified"]
+    assert after["artifact_version"]["sha256"] != before["artifact_version"]["sha256"]
+
+
+def test_nonstandard_json_numbers_are_not_accepted_as_json(tmp_path):
+    state = RunState(goal="json", success_criteria=[Criterion(id="json", description="JSON", kind="file_json",
+        path="answer.json", json_match={"value":float("inf")})])
+    (tmp_path / "answer.json").write_text('{"value":Infinity}')
+    assert CompletionGate(Workspace(tmp_path)).check(state, FinalResponse(content="done"), History())

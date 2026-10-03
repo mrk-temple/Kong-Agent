@@ -112,10 +112,16 @@ _LEGACY_DATA_CHECKS = {
 }
 
 
-def legacy_a3_fixture_model(case_id: str) -> ScriptedModel:
+def legacy_a3_fixture_model(case_id: str, *, exact_contract: bool = False) -> ScriptedModel:
     """New comparison group: check a stable artifact after data generation."""
     old = fixture_model(case_id)
     decisions = list(old.decisions)
+    if exact_contract and case_id == "mcp_add":
+        for decision in decisions:
+            if isinstance(decision, Act):
+                for action in decision.actions:
+                    if action.name == "write_file" and action.arguments.get("path") == "result.txt":
+                        action.arguments["content"] = "42"
     if case_id in _LEGACY_DATA_CHECKS:
         decisions.insert(-1, _act("process_exec", argv=["python", "-c", _LEGACY_DATA_CHECKS[case_id]]))
     return ScriptedModel(decisions)

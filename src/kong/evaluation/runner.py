@@ -239,7 +239,9 @@ def _model_error_categories(runtime):
         if event.type != "model_error":
             continue
         value = str(event.payload.get("error", ""))
-        if "Model service HTTP" in value:
+        if event.payload.get("category"):
+            category = event.payload["category"]
+        elif "Model service HTTP" in value:
             category = "service_http"
         elif "Cannot connect" in value:
             category = "connection"
@@ -363,7 +365,8 @@ async def _trial(case: Case, repeat: int, folder: Path, *, fixture: bool, config
             async with httpx.AsyncClient(follow_redirects=False) as client:
                 stage = "runtime_setup"
                 model = ((variation_fixture_model(case.id) if case.id in CONTRACTS else
-                          legacy_a3_fixture_model(case.id) if task_set in {"legacy12_a3", "legacy12_contracts"} else
+                          legacy_a3_fixture_model(case.id, exact_contract=task_set == "legacy12_contracts")
+                          if task_set in {"legacy12_a3", "legacy12_contracts"} else
                           fixture_model("plan_approval" if case.category == "approval" else case.id))
                          if fixture else MeteredModel(config, client))
                 if case.id in CONTRACTS and CONTRACTS[case.id].continuation:
@@ -467,6 +470,8 @@ async def _trial(case: Case, repeat: int, folder: Path, *, fixture: bool, config
               "model_calls":model_calls, "call_records":call_records, "usage":usage,
               "usage_complete":(runtime.metrics.usage_calls == model_calls and not runtime.metrics.legacy_unknown) if runtime and not fixture and model_calls else None,
               "model_errors":_model_error_categories(runtime) if runtime else [],
+              "fatal_model_configuration": bool(runtime and any(e.type == "model_error" and e.payload.get("fatal_configuration")
+                                                                  for e in runtime.history.events)),
               "failed_tools":_tool_failures(runtime) if runtime else [],
               "elapsed_seconds":round(time.perf_counter()-started,3), "stop_reason":stop_reason,
               "model":config.model if config else "scripted_fixture", "profile":profile if config else None,
@@ -525,6 +530,12 @@ async def run_suite(output: Path, *, case_ids: list[str] | None = None, repetiti
                                          "implementation_sha256":implementation_sha256, "suite_id":suite_id,
                                          "created_at":datetime.now(timezone.utc).isoformat()})
     results = []
+    planned = len(selected) * repetitions
+    def summarize(stopped=None):
+        result = _summary(results, mode, suite_id, comparison_id, implementation_sha256, task_set, resource_fingerprint)
+        result.update(planned_runs=planned, recorded_runs=len(results), not_attempted=planned-len(results),
+                      complete=len(results) == planned, stopped_reason=stopped)
+        return result
     for case in selected:
         for repeat in range(1, repetitions+1):
             folder = root / "cases" / case.id / f"trial-{repeat:02d}"
@@ -534,9 +545,11 @@ async def run_suite(output: Path, *, case_ids: list[str] | None = None, repetiti
                                   implementation_sha256=implementation_sha256,
                                   task_set=task_set, resource_fingerprint=resource_fingerprint)
             results.append(result)
-            _write_json(root / "summary.json", _summary(results, mode, suite_id, comparison_id, implementation_sha256,
-                                                          task_set, resource_fingerprint))
+            stopped = "fatal_model_configuration" if live and result.get("fatal_model_configuration") else None
+            summary = summarize(stopped)
+            _write_json(root / "summary.json", summary)
             print(json.dumps({"case":case.id,"repetition":repeat,"status":result["status"],
                               "model_calls":result["model_calls"]}, ensure_ascii=False), flush=True)
-    return root, _summary(results, mode, suite_id, comparison_id, implementation_sha256,
-                          task_set, resource_fingerprint)
+            if stopped:
+                return root, summary
+    return root, summarize()

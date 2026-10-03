@@ -3,6 +3,8 @@
 一个面向个人本地任务的单 Agent Runtime：模型只提出决策，授权、执行、证据与验收由 Runtime 完成。
 
 当前版本 **0.3.0**，定位为早期开发者版本。已验证环境为 Windows / Python 3.12；需要 Python 3.12+。
+
+当前开发分支包含未发布的 V0.4A 正确性候选。工程回归已通过，真实任务质量门槛仍未通过；具体测量口径、失败与限制见 [EVALUATION](EVALUATION.md)。
 支持 Chat Completions 兼容模型接口，模型通过结构化 JSON 提出决策。
 
 **发布状态：本仓库以允许清单快照的全新历史公开（内部 `docs/` 等私有材料不随仓库发布），地址 github.com/mrk-temple/Kong-Agent。以 [MIT 许可证](LICENSE) 授权。**

@@ -23,7 +23,7 @@ def export(suite: Path, output: Path):
         allowed = ("case", "category", "repetition", "mode", "fixture_simulations", "score_scope", "status",
                    "runtime_status", "error_completion", "checks", "model_calls", "turns", "call_records", "usage",
                    "elapsed_seconds", "human_intervention", "protected_hashes", "usage_complete", "failed_tools", "model_errors", "implementation_sha256",
-                   "task_set", "resource_fingerprint", "prior_seed_calls")
+                   "task_set", "resource_fingerprint", "prior_seed_calls", "fatal_model_configuration")
         item = {key:trial[key] for key in allowed if key in trial}
         item["failed_checks"] = [name for name, value in trial["checks"].items() if not value]
         item["raw_result_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()

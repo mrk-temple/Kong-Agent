@@ -280,7 +280,9 @@ class Runtime:
                     previous = next((e for e in reversed(self.history.events)
                                      if e.type in {"decision", "model_error"}), None)
                     self.history.append("model_error", self.state.turn_count, error=str(exc),
-                                        diagnostics=getattr(exc, "diagnostics", []))
+                                        diagnostics=getattr(exc, "diagnostics", []), category=exc.category,
+                                        retryable=exc.retryable, status_code=exc.status_code,
+                                        fatal_configuration=exc.fatal_configuration)
                     if isinstance(exc, ModelProtocolError) and (previous is None or previous.type != "model_error"):
                         self.history.append("feedback", self.state.turn_count,
                             error=str(exc), instruction="No action executed. Correct the JSON format on the next budgeted turn.")

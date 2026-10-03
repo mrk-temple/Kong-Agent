@@ -47,14 +47,28 @@ class CompatibleModel:
                 async with httpx.AsyncClient(follow_redirects=False) as client:
                     response = await client.post(endpoint, json=payload, headers=headers, timeout=self.config.timeout)
         except httpx.TimeoutException:
-            raise ModelError("Model request timed out. Check the service or raise the profile timeout.") from None
+            raise ModelError("Model request timed out. Check the service or raise the profile timeout.", category="timeout", retryable=True) from None
         except httpx.HTTPError:
-            raise ModelError("Cannot connect to the model service. Check base_url and network.") from None
+            raise ModelError("Cannot connect to the model service. Check base_url and network.", category="connection", retryable=True) from None
         if response.status_code != 200:
             hints = {401: "Check the API key environment variable.", 403: "Access denied by the provider.",
+                     402: "Check account payment/quota status with the provider.",
                      404: "Check base_url and model name.", 429: "Provider rate limit or quota reached.",
                      400: "Check model name and JSON mode support (json_mode=false for unsupported servers)."}
-            raise ModelError(f"Model service HTTP {response.status_code}. " + hints.get(response.status_code, "Check provider availability."))
+            status = response.status_code
+            category = {400:"configuration", 401:"authentication", 402:"billing", 403:"access", 404:"configuration",
+                        408:"timeout", 429:"rate_limit"}.get(status, "configuration" if 300 <= status < 500 else "service_http")
+            if status == 429:
+                try:
+                    body = response.json()
+                    error = body.get("error") if isinstance(body, dict) else None
+                    code = error.get("code") if isinstance(error, dict) else None
+                    if isinstance(code, str) and code in {"insufficient_quota", "insufficient_balance", "quota_exceeded"}:
+                        category = "billing"
+                except ValueError:
+                    pass
+            raise ModelError(f"Model service HTTP {status}. " + hints.get(status, "Check provider availability."),
+                             category=category, retryable=category != "billing" and (status in {408, 429} or status >= 500), status_code=status)
         try:
             body = response.json()
             if not isinstance(body, dict):

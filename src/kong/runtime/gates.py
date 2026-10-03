@@ -1,4 +1,5 @@
 import json
+import hashlib
 
 from kong.contracts import FinalResponse, History, RunState
 from kong.workspace import Workspace
@@ -30,6 +31,10 @@ def unique_object(pairs):
             raise ValueError("Duplicate JSON key")
         result[key] = value
     return result
+
+
+def invalid_constant(value):
+    raise ValueError("Nonstandard JSON number")
 
 
 def pointer(value, path):
@@ -100,9 +105,11 @@ class ProgressGate:
 class CompletionGate:
     def __init__(self, workspace: Workspace):
         self.workspace = workspace
+        self.file_versions = {}
 
     def check(self, state: RunState, decision: FinalResponse, history: History) -> list[str]:
         problems: list[str] = []
+        self.file_versions = {}
         if state.requires_evidence and not history.observations:
             problems.append("An environment task cannot complete without a successful tool observation.")
         if history.observations:
@@ -147,19 +154,26 @@ class CompletionGate:
             try:
                 path = self.workspace.resolve(criterion.path)
                 valid = path.is_file()
-                if valid and criterion.kind == "file_contains":
-                    valid = (path.stat().st_size <= 1_000_000
-                             and criterion.contains in path.read_text(encoding="utf-8"))
-                if valid and criterion.kind in {"file_equals", "file_json"}:
-                    valid = path.stat().st_size <= 1_000_000
+                if valid:
+                    limit = 100_000_000 if criterion.kind == "file_exists" else 1_000_000
+                    before = path.stat()
+                    valid = before.st_size <= limit
                     if valid:
                         with path.open("rb") as stream:
-                            data = stream.read(1_000_001)
-                        valid = len(data) <= 1_000_000
+                            data = stream.read(limit + 1)
+                        after = path.stat()
+                        valid = len(data) <= limit and (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns)
                         if valid:
+                            self.file_versions[criterion.id] = {"path":criterion.path, "bytes":len(data),
+                                "sha256":hashlib.sha256(data).hexdigest()}
+                        if valid and criterion.kind != "file_exists":
                             text = data.decode("utf-8-sig" if criterion.kind == "file_json" else "utf-8")
-                            valid = (text == criterion.expected_text if criterion.kind == "file_equals" else
-                                     exact_json(json.loads(text, object_pairs_hook=unique_object), criterion.json_match))
+                            if criterion.kind == "file_contains":
+                                valid = criterion.contains in text.replace("\r\n", "\n").replace("\r", "\n")
+                            else:
+                                valid = (text == criterion.expected_text if criterion.kind == "file_equals" else
+                                         exact_json(json.loads(text, object_pairs_hook=unique_object,
+                                                               parse_constant=invalid_constant), criterion.json_match))
             except (OSError, ValueError, UnicodeError, RecursionError):
                 valid = False
             if not valid:
@@ -181,6 +195,7 @@ class CompletionGate:
             verified = not any(p.startswith(("Criterion ", "Deterministic verifier")) for p in problems)
             results.append({"scope":scope, "id":criterion.id, "description":criterion.description,
                             "kind":criterion.kind, "verified":verified,
+                            "artifact_version":self.file_versions.get(criterion.id),
                             "evidence_ids":result_evidence(criterion, history, self.workspace, state) if criterion.kind == "tool_result" else [],
                             "artifact_versions":{o.action_id: o.artifact_versions for o in history.observations
                                                  if o.action.name == criterion.tool_name and o.artifact_versions}})
