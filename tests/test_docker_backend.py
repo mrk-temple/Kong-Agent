@@ -108,6 +108,28 @@ def test_docker_cancellation_waits_for_creation_then_removes_container(tmp_path)
 LIVE_IMAGE = os.environ.get("KONG_TEST_DOCKER_IMAGE")
 
 
+@pytest.mark.skipif(not LIVE_IMAGE, reason="Fresh import verification requires an installed trusted Linux Python image")
+def test_real_docker_fresh_python_reads_source_despite_same_timestamp_cache(tmp_path):
+    async def scenario():
+        backend = make_backend(tmp_path, LIVE_IMAGE)
+        module = tmp_path / "job" / "subject.py"
+        module.write_bytes(b"value = 1\n")
+        before = module.stat()
+        executor = ToolExecutor(default_registry(Workspace(tmp_path), allow_process=True, process_backend=backend))
+        compiled = await executor.execute(ToolCall(name="process_exec", arguments={"cwd": "job",
+            "argv": ["python", "-c", "import py_compile; py_compile.compile('subject.py', doraise=True)"]}))
+        assert compiled.success, compiled
+        module.write_bytes(b"value = 2\n")
+        os.utime(module, ns=(before.st_atime_ns, before.st_mtime_ns))
+        args = {"cwd": "job", "argv": ["python", "-c", "from subject import value; print(value)"]}
+        legacy = await executor.execute(ToolCall(name="process_exec", arguments=args))
+        assert legacy.success and legacy.output["stdout"].strip() == "1"
+        checked = await executor.execute(ToolCall(name="process_exec", arguments={**args, "fresh_python": True}))
+        assert checked.success and checked.output["stdout"].strip() == "2"
+        assert checked.output["fresh_python_imports"] is True
+    asyncio.run(scenario())
+
+
 @pytest.mark.skipif(not LIVE_IMAGE, reason="Set KONG_TEST_DOCKER_IMAGE to an installed trusted Linux Python image for real boundary probes")
 def test_real_docker_file_network_and_subprocess_boundaries(tmp_path):
     async def scenario():

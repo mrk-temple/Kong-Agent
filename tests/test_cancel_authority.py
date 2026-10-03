@@ -216,6 +216,10 @@ def test_cancel_from_action_callback_does_not_start_allocated_but_unstarted_proc
     assert asyncio.run(runtime.run()).status == Status.STOPPED
     assert not (tmp_path / "forbidden.txt").exists()
     assert runtime.metrics.tool_calls == 0 and not runtime.pending_action_ids
+    assert runtime.history.observations[0].dispatched is False
+    restored = Runtime.restore(runtime.store.load(runtime.state.run_id), ScriptedModel([]), workspace, registry,
+                               store=runtime.store)
+    assert restored.metrics.tool_timing_complete  # Known not started is not a missing execution duration.
 
 
 def test_legacy_queued_cancel_snapshot_still_stops_without_model_call(tmp_path):
