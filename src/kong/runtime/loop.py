@@ -52,6 +52,7 @@ class Runtime:
         self.state = state
         self.history = history if history is not None else History()
         self._record_initial_goal = history is None
+        self._driver_started = None
         self.store = store
         self.context_builder = context_builder or ContextBuilder()
         if context_engine is not None and context_builder is not None:
@@ -438,6 +439,7 @@ class Runtime:
         self._running = True
         self._cancel_requested = self.cancel_input is not None or any(i.kind == "cancel" for i in self.queued_inputs)
         started = perf_counter()
+        self._driver_started = started
         try:
             policy = self.executor.permissions
             self.emit("permissions", {"fingerprint": policy_fingerprint(policy), "policy": policy.model_dump(),
@@ -460,6 +462,7 @@ class Runtime:
         finally:
             self._running = False
             self.metrics.active_seconds += perf_counter() - started
+            self._driver_started = None
             kind = {Status.COMPLETED: "completed", Status.WAITING_USER: "paused",
                     Status.STOPPED: "cancelled" if self.state.stop_reason == "user_interrupted" else "stopped",
                     Status.FAILED: "failed"}.get(self.state.status, "paused")
@@ -644,6 +647,7 @@ class Runtime:
                             transition = self.controller.transition(self.state, decision, self.history)
                     else:
                         transition = self.controller.transition(self.state, decision, self.history)
+                self._record_verification_checkpoint()
                 self.history.append("feedback", self.state.turn_count, transition=transition.model_dump())
                 self.emit("transition", {"turn": self.state.turn_count, **transition.model_dump()})
                 self.save()
@@ -659,6 +663,28 @@ class Runtime:
         self.save()
         await self.context_engine.commit(state=self.state, history=self.history)
         return self.state
+
+    def _record_verification_checkpoint(self):
+        if self._driver_started is None or self.state.pending_approval or self.state.requires_replan:
+            return
+        if self.state.mode == Mode.PLAN and (not self.state.plan or self.state.plan.approved_revision != self.state.plan.revision):
+            return
+        from kong.runtime.verification_reporting import checkpoint_values, verification_epoch
+        last = next((e.payload["decision"] for e in reversed(self.history.events)
+                     if e.type == "decision" and e.payload.get("decision", {}).get("kind") == "respond"), {})
+        with measure("validation_seconds"):
+            criteria = self.controller.completion_gate.criteria_results(self.state, self.history, last.get("criteria_evidence", {}))
+        if not criteria:
+            return
+        values = {**checkpoint_values(criteria), "status": self.state.status.value,
+                  "scope_event_index": verification_epoch(self.history)}
+        previous = next((e.payload["verification_checkpoint"] for e in reversed(self.history.events)
+                         if "verification_checkpoint" in e.payload), {})
+        if all(previous.get(key) == value for key, value in values.items()):
+            return
+        self.history.append("feedback", self.state.turn_count, verification_checkpoint={**values,
+            "turn": self.state.turn_count, "model_calls": self.metrics.model_calls, "tool_calls": self.metrics.tool_calls,
+            "active_seconds": self.metrics.active_seconds + perf_counter() - self._driver_started})
 
     async def _actions(self, decision: Act | NeedDiscovery) -> bool:
         with metrics_scope(self.metrics):

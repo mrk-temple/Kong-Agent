@@ -118,3 +118,16 @@ class CompletionContract(Declaration):
 
     def version_paths(self) -> list[str]:
         return sorted(set([a.path for a in self.artifacts] + self.protected_paths + self.required_reads + self.read_before_ask))
+
+
+def has_business_conditions(contract):
+    if not contract.allow_completion:
+        return bool(contract.read_before_ask or contract.required_question)
+    if contract.family == "code":
+        return any(command.verify_final for command in contract.commands)
+    return bool(contract.artifacts) and all(
+        artifact.expected_text is not None or artifact.exact_json is not None or artifact.json_fields
+        or artifact.csv_columns or artifact.row_count is not None or artifact.csv_rows is not None
+        or any(rule.artifact_id == artifact.id for rule in contract.aggregates)
+        for artifact in contract.artifacts)
+

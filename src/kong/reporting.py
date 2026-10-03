@@ -78,6 +78,7 @@ def run_report(runtime):
                 "verified_criteria_count":sum(c["verified"] for c in criteria), "declared_criteria_count":len(criteria),
                 "goal_progress_measured":False,
                 "note":"Unique successful outputs currently earn activity credit. This is not verified goal progress; lease policy is unchanged."}
+    from kong.runtime.verification_reporting import verification_summary, closure_summary
     return {"schema_version":1, "generated_at":datetime.now(timezone.utc).isoformat(),
         "run_id":state.run_id, "status":state.status.value, "goal":state.goal,
         "model_claim":state.final_output, "stop_reason":state.stop_reason,
@@ -89,6 +90,7 @@ def run_report(runtime):
             (["未配置确定性验收条件；成功工具证据不等于目标语义正确。"] if not criteria else []),
         "scope_note":"仅检查显式条件与已记录证据；未声明的任务要求、视觉质量、工具外写入未自动验证。文件状态以摘要生成时间为准。",
         "metrics":metrics, "progress":progress,
+        "verification":verification_summary(state, criteria), "closure":closure_summary(runtime),
         "failed_tools":[{"id":o.action_id,"tool":o.action.name,"error":o.error} for o in history.observations if not o.success],
         "model_errors":[e.payload.get("error") for e in history.events if e.type == "model_error"],
         "resource_handles_in_history":{k:sorted(v) for k,v in resource_handles(history).items()},
