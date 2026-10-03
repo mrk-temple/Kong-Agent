@@ -93,8 +93,16 @@ class RuntimeController:
             if problems:
                 history.append("feedback", state.turn_count, completion_rejected=problems,
                     completion_feedback=self.completion_gate.rejection_feedback(state, decision, history, problems))
+                from kong.runtime.acceptance import ACCEPTANCE_REQUIRED
+                if any(problem.startswith(ACCEPTANCE_REQUIRED) for problem in problems):
+                    state.status = Status.WAITING_USER
+                    state.pending_question = ("当前产物已保留，但缺少覆盖交付物的验收条件，业务完成未确认。"
+                        "请提供明确的值、结果或检查要求；系统不会自行编造条件或重复执行工具来宣告完成。")
+                    state.stop_reason = "acceptance_criteria_required"
+                    return Transition(control="pause", reason="acceptance_criteria_required")
             else:
-                state.final_output = decision.content
+                state.final_output = (("机械检查完成，业务完成未确认。\n模型说明（未经业务验收）：" + decision.content)
+                                      if state.completion_scope == "mechanical" and history.observations else decision.content)
                 state.status = Status.COMPLETED
                 state.phase = Phase.FINISHED
                 state.stop_reason = "goal_completed"

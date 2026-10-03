@@ -16,15 +16,18 @@ def checkpoint_values(criteria):
 
 
 def verification_summary(state, criteria):
-    from kong.completion_contracts import has_business_conditions
+    from kong.runtime.acceptance import has_declared_acceptance
     if state.completion_contract:
         coverage = "host_contract"
     elif any(r["kind"] in {"file_equals", "file_json"} for r in criteria):
         coverage = "explicit_value_conditions"
     else:
         coverage = "mechanical_only" if criteria else "undeclared"
-    business = (has_business_conditions(state.completion_contract) if state.completion_contract else coverage == "explicit_value_conditions")
+    business = has_declared_acceptance(state)
     return {"coverage": coverage, "business_acceptance_declared": bool(business),
+            "completion_scope": state.completion_scope,
+            "business_accepted": bool(state.completion_scope == "declared" and business and
+                                      state.status.value == "completed" and all(r["verified"] for r in criteria)),
             "declared_checks_passed": all(r["verified"] for r in criteria) if criteria else None,
             "note": "Only the declared checks are verified. Existence, parsing, types and command success have different coverage; none proves undeclared business requirements."}
 

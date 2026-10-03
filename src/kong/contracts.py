@@ -188,6 +188,8 @@ class Approval(Contract):
 
 
 class RunState(Contract):
+    completion_scope: Literal["declared", "mechanical"] = Field(default="declared",
+        description="Host-owned scope. Mechanical completion never claims business acceptance.")
     completion_contract: CompletionContract | None = None
     contract_protected_versions: dict[str, str | None] = Field(default_factory=dict)
     contract_invalidated: bool = False

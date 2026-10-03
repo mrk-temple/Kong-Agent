@@ -300,6 +300,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--criteria", type=Path, help="JSON array of Criterion contracts")
     run.add_argument("--completion-contract", type=Path, help="调用方提供的代码/数据任务完成合同 JSON")
     run.add_argument("--task-family", choices=["code", "data"], help="显式代码/数据入口；必须提供同类完成合同")
+    run.add_argument("--completion-scope", choices=["declared", "mechanical"], default="declared",
+                     help="默认需要声明验收条件；mechanical 仅结束机械检查，不确认业务完成")
     resume = commands.add_parser("resume", help="恢复一个已保存任务")
     resume.add_argument("run_id")
     resume.add_argument("--no-interactive", action="store_true")
@@ -506,6 +508,7 @@ async def _async_main(args, default_registry) -> int:
                               thread_id=args.thread, on_event=events,
                               memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
         configure(runtime)
+        runtime.state.completion_scope = args.completion_scope
         if args.criteria:
             from pydantic import TypeAdapter
             from kong.contracts import Criterion

@@ -111,6 +111,10 @@ class CompletionGate:
     @attributed("validation_seconds")
     def check(self, state: RunState, decision: FinalResponse, history: History) -> list[str]:
         problems: list[str] = []
+        from kong.runtime.acceptance import acceptance_problem
+        missing_acceptance = acceptance_problem(state, history)
+        if missing_acceptance:
+            problems.append(missing_acceptance)
         changed_goal = max((i for i, e in enumerate(history.events)
                             if e.type == "human" and e.payload.get("command") == "input_goal"), default=-1)
         if changed_goal >= 0 and state.requires_evidence:

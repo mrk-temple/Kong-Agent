@@ -44,7 +44,8 @@ class Runtime:
                  memory_store=None, project_id: str | None = None,
                  on_event: Callable[[str, dict], None] | None = None, driver: str = "compatible",
                  permissions: PermissionPolicy | None = None, read_concurrency: int = 3,
-                 model_retry_limit: int = 2, completion_contract: CompletionContract | dict | None = None):
+                 model_retry_limit: int = 2, completion_contract: CompletionContract | dict | None = None,
+                 completion_scope: str | None = None):
         self.model = model
         self.workspace = workspace
         self.registry = registry
@@ -115,6 +116,10 @@ class Runtime:
         self._last_delta = 0
         self._cancel_requested = False
         self._active_cancellable_task = None
+        if completion_scope is not None:
+            if history is not None:
+                raise ValueError("Restore preserves its saved completion scope")
+            self.state.completion_scope = completion_scope
         if completion_contract is not None:
             if history is not None:
                 raise ValueError("Restore preserves its saved completion contract; update it explicitly after restore")
