@@ -61,7 +61,9 @@ def test_evidence_criterion_can_repair_mapping_without_more_tools(tmp_path):
     model = ScriptedModel([Act(actions=[Action(name="write_file", arguments={"path": "out.txt", "content": "OK"}),
         Action(name="read_file", arguments={"path": "out.txt"})]), FinalResponse(content="done", evidence_ids=["a2"]),
         FinalResponse(content="done", evidence_ids=["a2"], criteria_evidence={"current": ["a2"]})])
-    runtime = Runtime.new("verify current output", model, workspace, default_registry(workspace))
+    # This checks receipt binding, not a business value or content requirement.
+    runtime = Runtime.new("verify current output", model, workspace, default_registry(workspace),
+                          completion_scope="mechanical")
     runtime.state.success_criteria = [Criterion(id="current", description="Current proof", artifact_paths=["out.txt"])]
     assert asyncio.run(runtime.run()).status == Status.COMPLETED
     feedback = latest_feedback(runtime)

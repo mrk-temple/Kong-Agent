@@ -221,6 +221,8 @@ class CompletionGate:
                             "evidence_ids":result_evidence(criterion, history, self.workspace, state) if criterion.kind == "tool_result" else [],
                             "artifact_versions":{o.action_id: o.artifact_versions for o in history.observations
                                                  if o.action.name == criterion.tool_name and o.artifact_versions}})
+            from kong.runtime.finalization import criterion_details
+            results[-1].update(criterion_details(criterion, history, self.workspace, state, verified))
         from kong.runtime.completion import contract_results
         return results + contract_results(state, history, self.workspace)
 

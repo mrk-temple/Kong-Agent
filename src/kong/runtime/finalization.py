@@ -2,27 +2,75 @@
 from kong.runtime.evidence import fresh
 
 
-def remaining_steps(state, results, failed, output_failed):
+def criterion_details(criterion, history, workspace, state, verified):
+    """Describe existing legacy requirements; never manufacture a command."""
+    details = {"path": criterion.path, "tool": criterion.tool_name,
+               "artifact_paths": list(criterion.artifact_paths), "evidence_scope": criterion.evidence_scope,
+               "issues": []}
+    if verified:
+        return details
+    if criterion.kind in {"tool_success", "tool_result"}:
+        from kong.runtime.gates import subset
+        from kong.runtime.evidence import targets
+        candidates = [(i,o) for i,o in enumerate(history.observations) if o.action.name == criterion.tool_name
+            and (criterion.kind != "tool_result" or (criterion.operation is None or
+                o.action.arguments.get("operation") == criterion.operation) and
+                subset(o.action.arguments, criterion.arguments_match))]
+        if not candidates:
+            code = "criterion.not_observed"
+        else:
+            index, obs = candidates[-1]
+            if not obs.success or obs.outcome_unknown:
+                code = "criterion.latest_failed_or_unknown"
+            elif criterion.evidence_scope == "current" and any(
+                    obs.artifact_versions_before.get(path) != obs.artifact_versions.get(path)
+                    for path in targets(criterion, state)):
+                code = "criterion.generation_not_stable_verification"
+            elif criterion.evidence_scope == "current" and not fresh(criterion, history, index, workspace, state):
+                code = "criterion.current_verification_required"
+            else:
+                code = "criterion.result_mismatch"
+        details["issues"] = [{"code": code, "tool": criterion.tool_name}]
+    elif criterion.kind == "evidence":
+        details["issues"] = [{"code": "criterion.evidence_required"}]
+    else:
+        details["issues"] = [{"code": "criterion.file_condition_failed", "path": criterion.path}]
+    return details
+
+
+def remaining_steps(state, results, failed, output_failed, *, acceptance_required=False, last_failed=False):
     """Advice only; no dispatch, implicit parameter changes or evidence binding."""
     contract = state.completion_contract
-    if contract is None:
-        return []
+    if acceptance_required:
+        return [{"kind": "ask", "reason": "Caller-declared acceptance conditions are missing; do not invent them or replay tools."}]
     if any(result["kind"] in {"protected", "binding", "version", "completion"} for result in failed):
         return [{"kind": "ask", "reason": "Resolve the failed host requirement; do not modify protected sources or replace the contract."}]
     steps = []
     if output_failed:
-        steps.append({"kind": "repair_artifact", "paths": [r.get("path") for r in failed if r["kind"] == "artifact"],
+        steps.append({"kind": "repair_artifact", "paths": [r.get("path") for r in failed if r["kind"] in
+                      {"artifact", "file_exists", "file_contains", "file_equals", "file_json"}],
                       "instruction": "Inspect and fix only the failing artifact/business requirement within authorized scope."})
     commands = [r for r in results if r["kind"] == "command" and (not r["verified"] or output_failed and
-                any("command:" + c.id == r["id"] and c.verify_final for c in contract.commands))]
+                any("command:" + c.id == r["id"] and c.verify_final for c in (contract.commands if contract else [])))]
     for result in commands:
         steps.append({"kind": "act", "requirement": result["id"], "action": result["required_action"],
                       "instruction": "Execute the declared command with these exact required arguments; verify its exit/output."})
+    legacy = [r for r in failed if r["kind"] in {"tool_success", "tool_result", "evidence"}]
+    for result in legacy:
+        steps.append({"kind": "verify_criterion", "requirement": result["id"], "tool": result.get("tool"),
+                      "artifact_paths": result.get("artifact_paths", []), "issues": result.get("issues", []),
+                      "instruction": "Obtain actual evidence satisfying this declared criterion on the final versions. "
+                          "A generating mutation is not stable verification. Use an authorized final check; "
+                          "do not automatically replay a generator or invent argv, results or IDs."})
+    if last_failed:
+        steps.append({"kind": "recover_last_action", "instruction": "Inspect the latest failure and recover or ask; "
+                      "successful older receipts do not override it. Do not automatically replay a side effect."})
     reads = [r["path"] for r in failed if r["kind"] == "read"]
-    if output_failed:
+    if output_failed and contract:
         reads += contract.required_reads
-    reads += [a.path for a in contract.artifacts if a.require_readback and (commands or output_failed or
-              any(r["id"] == "readback:" + a.id and not r["verified"] for r in results))]
+    if contract:
+        reads += [a.path for a in contract.artifacts if a.require_readback and (commands or legacy or output_failed or
+                  any(r["id"] == "readback:" + a.id and not r["verified"] for r in results))]
     for path in dict.fromkeys(reads):
         steps.append({"kind": "act", "action": {"name": "read_file", "arguments": {"path": path}},
                       "instruction": "Read the current complete file after the commands; later mutations invalidate final readback."})
@@ -35,7 +83,7 @@ def remaining_steps(state, results, failed, output_failed):
 def completion_guidance(gate, state, history):
     # Do not encourage environment work before approval, after changed input, or
     # when an interrupted intent still needs explicit resolution.
-    if (state.completion_contract is None or not history.observations or state.contract_invalidated
+    if (not (state.completion_contract or state.success_criteria or state.plan) or not history.observations or state.contract_invalidated
             or state.requires_replan or state.pending_approval or state.mode.value == "plan" and
             (not state.plan or state.plan.approved_revision != state.plan.revision)):
         return None
@@ -144,7 +192,9 @@ def rejection_feedback(gate, state, decision, history, problems):
     return {"satisfied": [result["id"] for result in results if result["verified"]][:100],
             "unsatisfied": unsatisfied[:100], "reasons": problems[:12],
             "requirement_issues": [{"id": r["id"], "issues": r.get("issues", [])} for r in failed][:30],
-            "remaining_steps": remaining_steps(state, results, failed, output_failed),
+            "remaining_steps": remaining_steps(state, results, failed, output_failed,
+                acceptance_required=any(p.startswith("Acceptance conditions required:") for p in problems),
+                last_failed=bool(history.observations and not history.observations[-1].success)),
             "current_valid_observations": sorted(valid)[-12:],
             "historical_event_observations": sorted(historical)[-12:],
             "available_successful_observations": successful[-12:],
