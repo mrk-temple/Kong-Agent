@@ -523,8 +523,10 @@ class Runtime:
                     if self._apply_inputs():
                         continue
                     if isinstance(exc, ModelProtocolError) and (previous is None or previous.type != "model_error"):
+                        from kong.models.diagnostics import repair_feedback
                         self.history.append("feedback", self.state.turn_count,
-                            error=str(exc), instruction="No action executed. Correct the JSON format on the next budgeted turn.")
+                            protocol_rejected=repair_feedback(exc.diagnostics),
+                            instruction="No action executed. Correct the JSON format at the listed paths on the next budgeted turn.")
                         self.emit("transition", {"turn":self.state.turn_count, "reason":"protocol_repair", "control":"continue"})
                         self.save()
                         continue

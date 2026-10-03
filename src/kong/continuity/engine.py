@@ -306,7 +306,7 @@ class ContextEngine:
         goal_source = next((source_for(thread.thread_id, state.run_id, i) for i, e in enumerate(history.events)
                             if e.type == "human" and e.payload.get("command") == "goal"), src("goal"))
         control = state.model_dump(mode="json", exclude={"goal", "progress_state", "final_output"})
-        items = [item("system", memory_protocol(), 0, [ContextSource(kind="system")]),
+        items = [item("system", memory_protocol(state, history), 0, [ContextSource(kind="system")]),
                  item("runtime_and_tools", "RUNTIME CONTROL STATE:\n" + json.dumps(control, ensure_ascii=False, separators=(",", ":"))
                       + "\nAVAILABLE TOOLS:\n" + json.dumps([t.model_dump() for t in tools], ensure_ascii=False, separators=(",", ":"))
                       + ("\nNEXT DECISION: checkpoint active. Use assess (diagnosis and next_strategy), or an evidence-backed respond/ask/plan. Environment actions will be rejected."
