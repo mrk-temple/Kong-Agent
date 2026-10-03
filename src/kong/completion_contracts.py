@@ -29,6 +29,7 @@ class ArtifactRequirement(Declaration):
     additional_keys: bool = True
     csv_columns: list[str] = Field(default_factory=list, max_length=100)
     row_count: int | None = Field(default=None, ge=0, le=100_000)
+    csv_rows: list[dict[str, str]] | None = Field(default=None, max_length=100_000)
 
     @model_validator(mode="after")
     def appropriate_fields(self):
@@ -36,8 +37,11 @@ class ArtifactRequirement(Declaration):
             raise ValueError("expected_text requires format=text")
         if (self.exact_json is not None or self.json_fields or not self.additional_keys) and self.format != "json":
             raise ValueError("JSON conditions require format=json")
-        if (self.csv_columns or self.row_count is not None) and self.format != "csv":
+        if (self.csv_columns or self.row_count is not None or self.csv_rows is not None) and self.format != "csv":
             raise ValueError("CSV conditions require format=csv")
+        if self.csv_rows is not None and (self.row_count is not None and len(self.csv_rows) != self.row_count
+                or self.csv_columns and any(set(row) != set(self.csv_columns) for row in self.csv_rows)):
+            raise ValueError("Declared CSV rows must match columns and row count")
         names = [field.name for field in self.json_fields]
         if len(set(names)) != len(names) or len(set(self.csv_columns)) != len(self.csv_columns):
             raise ValueError("Declared field names must be unique")

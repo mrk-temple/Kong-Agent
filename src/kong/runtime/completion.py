@@ -163,6 +163,7 @@ def contract_results(state, history, workspace):
                 columns, rows = csv_rows(data)
                 valid = (not artifact.csv_columns or columns == artifact.csv_columns)
                 valid = valid and (artifact.row_count is None or len(rows) == artifact.row_count)
+                valid = valid and (artifact.csv_rows is None or rows == artifact.csv_rows)
         except (OSError, ValueError, UnicodeError, RecursionError):
             valid = False
         add("artifact:" + artifact.id, "artifact", valid, "Final artifact structure/value: " + artifact.path)
