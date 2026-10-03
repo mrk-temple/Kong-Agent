@@ -26,6 +26,24 @@ def data_contract():
              "operation": "sum", "column": "value", "filters": {"status": ["active"]}}]}
 
 
+@pytest.mark.parametrize("content,verified", [
+    ("product,revenue\r\nA,1.20\r\nB,3.40\r\n", True),
+    ("product,revenue\nA,9.99\nB,3.40\n", False),
+    ("product,revenue\nB,3.40\nA,1.20\n", False),
+    ("product,revenue\nA,1.2\nB,3.4\n", False),
+])
+def test_csv_business_rows_are_exact_typed_and_ordered(tmp_path, content, verified):
+    contract = {"family": "data", "artifacts": [{"id": "csv", "path": "summary.csv", "format": "csv",
+        "csv_columns": ["product", "revenue"], "row_count": 2,
+        "csv_rows": [{"product": "A", "revenue": "1.20"}, {"product": "B", "revenue": "3.40"}]}]}
+    runtime = make_runtime(tmp_path, contract)
+    (tmp_path / "summary.csv").write_bytes(content.encode("utf-8"))
+    asyncio.run(actions(runtime, ("read_file", {"path": "summary.csv"})))
+    from kong.runtime.completion import contract_results
+    result = next(r for r in contract_results(runtime.state, runtime.history, runtime.workspace) if r["id"] == "artifact:csv")
+    assert result["verified"] is verified
+
+
 def make_runtime(path, contract, decisions=(), **kwargs):
     workspace = Workspace(path)
     return Runtime.new("follow correction and produce report", ScriptedModel(list(decisions)), workspace,
