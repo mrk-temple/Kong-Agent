@@ -250,10 +250,12 @@ uv run python examples/prepare_public_release.py
 例如代码修复合同：
 
 ```json
-{"version":1,"family":"code","protected_paths":["check.py"],"artifacts":[{"id":"code","path":"calc.py","format":"file","require_readback":false}],"commands":[{"id":"tests","argv":["python","check.py"],"stdout_contains":["checks passed"]}]}
+{"version":1,"family":"code","protected_paths":["check.py"],"artifacts":[{"id":"code","path":"calc.py","format":"file","require_readback":false}],"commands":[{"id":"tests","argv":["python","check.py"],"stdout_contains":["checks passed"],"fresh_python":true}]}
 ```
 
 命令通过实际工具执行，Gate 只检查已记录的结果；不会替模型运行检查。命令必须覆盖最终版本，之后修改文件需要重新核验。数据合同支持 UTF-8 `text`/`json`/`csv` 产物，必须有当前完整读回；合同文件验证上限 1 MB，文件工具读回仍受其 256 KB 上限限制。JSON 比较区分类型并拒绝重复键和非标准数值。
+
+Python 代码检查需同时在合同和 `process_exec` 动作中声明 `fresh_python:true`，使用 `python` 别名。它为本次导入指定新的缓存范围且禁用字节码写入，避免同秒同大小修改复用旧 `.pyc`。这不是隔离授权；普通进程默认行为保持原样。
 
 保护源初始版本进入快照，恢复不重新基线。运行中替换目标或追加约束会使已绑定合同失效并暂停；调用方通过 `Runtime.set_completion_contract` 更新后明确继续，新保护路径需在新的 Run 开始时声明。未声明任务要求不被自动核验，已有不带合同的 Run 保持原语义。
 

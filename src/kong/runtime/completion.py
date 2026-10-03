@@ -198,6 +198,8 @@ def contract_results(state, history, workspace):
                      and all(text in stdout for text in command.stdout_contains))
             if command.stdout_exact is not None:
                 valid = valid and not output.get("stdout_truncated") and stdout == command.stdout_exact
+            if command.fresh_python:
+                valid = valid and obs.action.arguments.get("fresh_python") is True and output.get("fresh_python_imports") is True
             if valid and command.verify_final:
                 criterion = Criterion(id="command", description="Final command verification", kind="tool_success",
                     tool_name="process_exec", after_last_write=True, artifact_paths=contract.version_paths())

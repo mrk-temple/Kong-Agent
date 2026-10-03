@@ -2,9 +2,11 @@ import sys
 import os
 from pathlib import Path
 import shutil
+import tempfile
+from uuid import uuid4
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, StrictBool, field_validator
 
 from kong.environments.process import execute_process, process_environment
 from kong.tools.base import Tool, ToolResult
@@ -20,6 +22,8 @@ class ProcessArgs(BaseModel):
     max_output_bytes: int = Field(default=16000, ge=256, le=64000, strict=True,
         description="Maximum retained bytes per stdout/stderr stream. Excess is discarded and marked.")
     encoding: Literal["utf-8", "gb18030"] = "utf-8"
+    fresh_python: StrictBool = Field(default=False,
+        description="Only argv executable python: use a new bytecode-cache read scope and disable cache writes, for checks of final Python source.")
 
     @field_validator("argv")
     @classmethod
@@ -63,9 +67,25 @@ class ProcessExecTool(Tool):
         if not cwd.is_dir():
             return ToolResult(success=False, error="cwd must be an existing workspace directory")
         argv = list(kwargs["argv"])
+        fresh_python = kwargs.get("fresh_python", False)
+        if fresh_python and (argv[0] != "python" or any("pycache_prefix" in arg for arg in argv[1:])):
+            return ToolResult(success=False, error="Fresh Python cache scope requires executable python and forbids cache-prefix overrides.")
+        def with_fresh_imports(command):
+            if not fresh_python:
+                return command
+            parent = "/tmp" if self.backend else tempfile.gettempdir()
+            prefix = str(Path(parent) / ("kong-python-check-" + uuid4().hex))
+            if self.backend:
+                prefix = prefix.replace("\\", "/")
+            elif Path(prefix).exists():
+                raise ValueError("Fresh Python cache scope already exists")
+            return [command[0], "-B", "-X", "pycache_prefix=" + prefix, *command[1:]]
         if self.backend:
-            return await self.backend.execute(argv, cwd, timeout_seconds=kwargs["timeout_seconds"],
+            result = await self.backend.execute(with_fresh_imports(argv), cwd, timeout_seconds=kwargs["timeout_seconds"],
                 max_output_bytes=kwargs["max_output_bytes"], encoding=kwargs["encoding"])
+            if fresh_python and isinstance(result.output, dict):
+                result.output["fresh_python_imports"] = True
+            return result
         if argv[0] == "python":
             argv[0] = sys.executable
         if os.name == "nt":
@@ -79,7 +99,9 @@ class ProcessExecTool(Tool):
             argv[0] = str(Path(resolved).resolve())
             if Path(argv[0]).suffix.casefold() in {".bat", ".cmd"}:
                 return ToolResult(success=False, error="Batch files require an explicit command interpreter in argv; no implicit shell.")
-        result = await execute_process(argv, cwd, timeout_seconds=kwargs["timeout_seconds"],
+        result = await execute_process(with_fresh_imports(argv), cwd, timeout_seconds=kwargs["timeout_seconds"],
             max_output_bytes=kwargs["max_output_bytes"], encoding=kwargs["encoding"])
         result.output["cwd"] = str(cwd.relative_to(self.workspace.root))
+        if fresh_python:
+            result.output["fresh_python_imports"] = True
         return result

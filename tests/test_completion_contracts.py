@@ -121,7 +121,7 @@ def test_json_parseability_is_strict(tmp_path, text):
 def code_contract():
     return {"family": "code", "protected_paths": ["check.py"],
         "artifacts": [{"id": "code", "path": "calc.py", "format": "file", "require_readback": False}],
-        "commands": [{"id": "tests", "argv": ["python", "check.py"], "stdout_contains": ["checks passed"]}]}
+        "commands": [{"id": "tests", "argv": ["python", "check.py"], "stdout_contains": ["checks passed"], "fresh_python": True}]}
 
 
 def prepare_code(path):
@@ -133,15 +133,15 @@ def test_code_verify_then_mutate_cannot_reuse_old_test_observation(tmp_path):
     prepare_code(tmp_path)
     runtime = make_runtime(tmp_path, code_contract())
     async def scenario():
-        await actions(runtime, ("process_exec", {"argv": ["python", "check.py"]}))
+        await actions(runtime, ("process_exec", {"argv": ["python", "check.py"], "fresh_python": True}))
         assert complete_problems(runtime) == []
         await actions(runtime, ("write_file", {"path": "calc.py", "content": "def total(values):\n    return sum(values)+1\n", "overwrite": True}))
         assert runtime.history.observations[-1].success
         assert any("command" in p for p in complete_problems(runtime))
-        await actions(runtime, ("process_exec", {"argv": ["python", "check.py"]}))
+        await actions(runtime, ("process_exec", {"argv": ["python", "check.py"], "fresh_python": True}))
         assert any("command" in p for p in complete_problems(runtime))
         await actions(runtime, ("write_file", {"path": "calc.py", "content": "def total(values):\n    return sum(values)\n", "overwrite": True}),
-            ("process_exec", {"argv": ["python", "check.py"]}))
+            ("process_exec", {"argv": ["python", "check.py"], "fresh_python": True}))
     asyncio.run(scenario())
     assert complete_problems(runtime) == []
 

@@ -52,6 +52,7 @@ class CommandRequirement(Declaration):
     stdout_contains: list[str] = Field(default_factory=list, max_length=30)
     stdout_exact: str | None = Field(default=None, max_length=64000)
     verify_final: bool = True
+    fresh_python: bool = False
 
 
 class CsvAggregate(Declaration):
@@ -96,6 +97,12 @@ class CompletionContract(Declaration):
             raise ValueError("Completion requires declared final artifacts")
         if self.family == "code" and (not self.commands or not any(c.verify_final for c in self.commands)):
             raise ValueError("Code completion requires a final verification command")
+        for command in self.commands:
+            executable = command.argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+            if command.fresh_python and command.argv[0] != "python":
+                raise ValueError("Fresh Python verification uses executable alias python")
+            if self.family == "code" and command.verify_final and executable in {"python", "python.exe", "python3"} and not command.fresh_python:
+                raise ValueError("Final Python source verification requires fresh_python=true")
         if self.family == "data" and any(not artifact.require_readback for artifact in self.artifacts):
             raise ValueError("Data artifacts require a final readback")
         by_id = {item.id: item for item in self.artifacts}
