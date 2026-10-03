@@ -49,7 +49,11 @@ def field_matches(value, requirement):
     return valid
 
 
-def read_evidence(path, state, history, workspace, *, final=False):
+def read_evidence(path, state, history, workspace, *, final=False, issues=None):
+    def reject(code):
+        if issues is not None:
+            issues.append({"code": code, "path": path})
+        return []
     candidates = []
     for index, obs in enumerate(history.observations):
         if obs.action.name != "read_file":
@@ -61,27 +65,30 @@ def read_evidence(path, state, history, workspace, *, final=False):
         if matches:
             candidates.append((index, obs))
     if not candidates:
-        return []
+        return reject("read.not_observed")
     index, obs = candidates[-1]
     current = fingerprint(workspace, path)
-    if (not obs.success or obs.outcome_unknown or obs.evidence_version != 2 or current in {None, "missing"}
-            or obs.artifact_versions.get(path) != current or obs.artifact_versions_before.get(path) != current):
-        return []
+    if not obs.success or obs.outcome_unknown:
+        return reject("read.failed_or_unknown")
+    if obs.evidence_version != 2:
+        return reject("read.missing_version_binding")
+    if current in {None, "missing"} or obs.artifact_versions.get(path) != current or obs.artifact_versions_before.get(path) != current:
+        return reject("read.version_changed")
     if final:
         try:
             text = stable_bytes(workspace, path).decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             output = obs.output
             if isinstance(output, dict):
                 if output.get("offset") != 0 or output.get("truncated") is not False:
-                    return []
+                    return reject("read.partial_readback")
                 output = output.get("content")
             if output != text:
-                return []
+                return reject("read.content_mismatch")
         except (OSError, ValueError, UnicodeError):
-            return []
+            return reject("read.unavailable_readback")
     if final and not fresh(Criterion(id="readback", description="Final artifact readback", artifact_paths=[path]),
                            history, index, workspace, state):
-        return []
+        return reject("read.after_possible_mutation_required")
     return [obs.action_id]
 
 
@@ -127,9 +134,9 @@ def contract_results(state, history, workspace):
     if contract is None:
         return []
     results, parsed = [], {}
-    def add(id_, kind, valid, description, ids=None):
+    def add(id_, kind, valid, description, ids=None, issues=None, **details):
         results.append({"scope": "contract", "id": id_, "kind": kind, "verified": bool(valid),
-                        "description": description, "evidence_ids": ids or []})
+                        "description": description, "evidence_ids": ids or [], "issues": issues or [], **details})
     add("contract:binding", "binding", not state.contract_invalidated, "Host contract invalidated by changed goal or constraints")
     add("contract:completion", "completion", contract.allow_completion, "This task permits a completion response")
     initial_versions = {path: fingerprint(workspace, path) for path in contract.version_paths()}
@@ -138,23 +145,32 @@ def contract_results(state, history, workspace):
         add("protected:" + path, "protected", expected not in {None, "missing"} and initial_versions[path] == expected,
             "Protected source: " + path)
     for path in contract.required_reads:
-        ids = read_evidence(path, state, history, workspace)
-        add("read:" + path, "read", bool(ids), "Required source read: " + path, ids)
+        issues = []
+        ids = read_evidence(path, state, history, workspace, issues=issues)
+        add("read:" + path, "read", bool(ids), "Required source read: " + path, ids, issues, path=path)
     from kong.runtime.gates import exact_json, invalid_constant, unique_object
     for artifact in contract.artifacts:
-        valid = False
+        valid, issues = False, []
         try:
             data = stable_bytes(workspace, artifact.path)
             valid = True
             if artifact.format == "text":
                 text = data.decode("utf-8")
                 valid = artifact.expected_text is None or text == artifact.expected_text
+                if not valid:
+                    issues.append({"code": "artifact.text_mismatch", "path": artifact.path,
+                        "expected_bytes": len(artifact.expected_text.encode("utf-8")), "actual_bytes": len(data),
+                        "newline_only": text.rstrip("\r\n") == artifact.expected_text.rstrip("\r\n")})
             elif artifact.format == "json":
                 value = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique_object, parse_constant=invalid_constant)
                 parsed[artifact.id] = value
                 valid = type(value) is dict
                 if valid:
-                    valid = all(f.name in value and field_matches(value[f.name], f) for f in artifact.json_fields)
+                    for field in artifact.json_fields:
+                        if field.name not in value or not field_matches(value[field.name], field):
+                            valid = False
+                            issues.append({"code": "artifact.field_mismatch", "field": field.name, "expected_type": field.type,
+                                "actual_type": type(value[field.name]).__name__ if field.name in value else "missing"})
                     if not artifact.additional_keys:
                         valid = valid and set(value) == {f.name for f in artifact.json_fields}
                     if artifact.exact_json is not None:
@@ -166,10 +182,13 @@ def contract_results(state, history, workspace):
                 valid = valid and (artifact.csv_rows is None or rows == artifact.csv_rows)
         except (OSError, ValueError, UnicodeError, RecursionError):
             valid = False
-        add("artifact:" + artifact.id, "artifact", valid, "Final artifact structure/value: " + artifact.path)
+        if not valid and not issues:
+            issues.append({"code": "artifact.structure_or_value_mismatch", "path": artifact.path})
+        add("artifact:" + artifact.id, "artifact", valid, "Final artifact structure/value: " + artifact.path, issues=issues, path=artifact.path)
         if artifact.require_readback:
-            ids = read_evidence(artifact.path, state, history, workspace, final=True)
-            add("readback:" + artifact.id, "readback", bool(ids), "Current final readback: " + artifact.path, ids)
+            issues = []
+            ids = read_evidence(artifact.path, state, history, workspace, final=True, issues=issues)
+            add("readback:" + artifact.id, "readback", bool(ids), "Current final readback: " + artifact.path, ids, issues, path=artifact.path)
     for rule in contract.aggregates:
         valid = False
         try:
@@ -179,9 +198,12 @@ def contract_results(state, history, workspace):
             pass
         add("aggregate:" + rule.id, "aggregate", valid, "Business aggregate: " + rule.id)
     for command in contract.commands:
-        candidates = []
+        candidates, processes = [], []
         for index, obs in enumerate(history.observations):
-            if obs.action.name != "process_exec" or obs.action.arguments.get("argv") != command.argv:
+            if obs.action.name != "process_exec":
+                continue
+            processes.append(obs)
+            if obs.action.arguments.get("argv") != command.argv:
                 continue
             try:
                 same_cwd = workspace.resolve(obs.action.arguments.get("cwd", ".")) == workspace.resolve(command.cwd)
@@ -189,25 +211,41 @@ def contract_results(state, history, workspace):
                 same_cwd = False
             if same_cwd:
                 candidates.append((index, obs))
-        valid, ids = False, []
+        valid, ids, issues = False, [], []
+        required = {"name": "process_exec", "arguments": {"argv": command.argv, "cwd": command.cwd}}
+        if command.fresh_python:
+            required["arguments"]["fresh_python"] = True
         if candidates:
             index, obs = candidates[-1]
             output = obs.output if isinstance(obs.output, dict) else {}
             stdout = output.get("stdout")
-            valid = (not obs.outcome_unknown and not output.get("timed_out") and type(output.get("exit_code")) is int
-                     and output["exit_code"] == command.exit_code and isinstance(stdout, str)
-                     and all(text in stdout for text in command.stdout_contains))
-            if command.stdout_exact is not None:
-                valid = valid and not output.get("stdout_truncated") and stdout == command.stdout_exact
+            conditions = [(obs.success, "command.observation_failed"),
+                (not obs.outcome_unknown, "command.effect_unknown"),
+                (not output.get("timed_out"), "command.timed_out"),
+                (type(output.get("exit_code")) is int and output["exit_code"] == command.exit_code, "command.exit_code_mismatch"),
+                (isinstance(stdout, str) and all(text in stdout for text in command.stdout_contains), "command.stdout_contains_missing")]
+            if command.stdout_exact is not None and (output.get("stdout_truncated") or stdout != command.stdout_exact):
+                issues.append({"code": "command.stdout_exact_mismatch"})
             if command.fresh_python:
-                valid = valid and obs.action.arguments.get("fresh_python") is True and output.get("fresh_python_imports") is True
+                conditions += [(obs.action.arguments.get("fresh_python") is True, "command.fresh_mode_missing"),
+                               (output.get("fresh_python_imports") is True, "command.fresh_marker_missing")]
+            issues += [{"code": code} for satisfied, code in conditions if not satisfied]
+            valid = not issues
             if valid and command.verify_final:
                 criterion = Criterion(id="command", description="Final command verification", kind="tool_success",
                     tool_name="process_exec", after_last_write=True, artifact_paths=contract.version_paths())
                 valid = fresh(criterion, history, index, workspace, state)
+                if not valid:
+                    issues.append({"code": "command.verification_stale"})
             if valid:
                 ids = [obs.action_id]
-        add("command:" + command.id, "command", valid, "Required command/exit/output: " + command.id, ids)
+        else:
+            code = ("command.cwd_mismatch" if any(o.action.arguments.get("argv") == command.argv for o in processes)
+                    else "command.argv_mismatch" if processes else "command.not_observed")
+            issues.append({"code": code})
+        add("command:" + command.id, "command", valid, "Required command/exit/output: " + command.id, ids, issues,
+            required_action=required, expected_exit_code=command.exit_code, expected_stdout_contains=command.stdout_contains,
+            latest_matching_observation=candidates[-1][1].action_id if candidates else None)
     # Detect external changes across the entire read-only validation window.
     stable = all(value is not None and value == fingerprint(workspace, path) for path, value in initial_versions.items())
     add("contract:stable", "version", stable, "Contract files stable throughout final validation")

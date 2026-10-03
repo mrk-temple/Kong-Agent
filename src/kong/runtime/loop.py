@@ -521,6 +521,13 @@ class Runtime:
                             "permission_policy": self.executor.permissions.model_dump(),
                             "input_rule": "Newest goal/constraints override stale decisions; use fresh evidence for a changed goal."},
                             ensure_ascii=False), sources=[ContextSource(kind="state", run_id=self.state.run_id)]))
+                    from kong.runtime.finalization import completion_guidance
+                    with measure("validation_seconds"):
+                        guidance = completion_guidance(self.controller.completion_gate, self.state, self.history)
+                    if guidance:
+                        self.context_engine.supplemental_items.append(ContextItem(category="runtime_feedback", priority=0,
+                            content="RUNTIME VERIFICATION STATUS:\n" + json.dumps(guidance, ensure_ascii=False, separators=(",", ":")),
+                            sources=[ContextSource(kind="state", run_id=self.state.run_id, path="completion_contract")]))
                     with measure("context_build_seconds"):
                         context = await self.context_engine.prepare(thread=self.thread, state=self.state,
                                                                     history=self.history, tools=self.registry.definitions())

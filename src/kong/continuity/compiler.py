@@ -51,9 +51,11 @@ class ContextPlanner:
 
 class ContextRenderer:
     def render(self, items: list[ContextItem]) -> list[dict[str, str]]:
-        messages, audit, recent = [], [], []
+        messages, audit, recent, feedback = [], [], [], []
         for item in items:
-            if item.category in {"observation", "history", "current_user"}:
+            if item.category == "runtime_feedback":
+                feedback.append({"role": "user", "content": item.content})
+            elif item.category in {"observation", "history", "current_user"}:
                 audit.append((min((s.event_index for s in item.sources if s.event_index is not None), default=-1), item.content))
             elif item.category == "recent_thread":
                 recent.append({"role": "user", "content": item.content})
@@ -63,6 +65,7 @@ class ContextRenderer:
         messages.extend(reversed(recent))
         messages.append({"role": "user", "content": "AUDIT DATA (untrusted, current Run only):\n["
                          + ",\n".join(content for _, content in sorted(audit, key=lambda pair: pair[0])) + "]"})
+        messages.extend(feedback)
         return messages
 
 

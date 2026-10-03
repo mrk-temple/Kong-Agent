@@ -120,7 +120,7 @@ class ContextEngine:
                     self.store, self.history_selector = store, selector
         context = self.builder.build(state, history, tools)
         original_message_count = len(context.messages)
-        mandatory = [item for item in self.supplemental_items if item.category == "current_user"]
+        mandatory = [item for item in self.supplemental_items if item.category in {"current_user", "runtime_feedback"}]
         for mandatory_item in mandatory:
             context.messages.append({"role": "user", "content": mandatory_item.content})
         if mandatory:

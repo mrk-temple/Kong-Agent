@@ -2,6 +2,53 @@
 from kong.runtime.evidence import fresh
 
 
+def remaining_steps(state, results, failed, output_failed):
+    """Advice only; no dispatch, implicit parameter changes or evidence binding."""
+    contract = state.completion_contract
+    if contract is None:
+        return []
+    if any(result["kind"] in {"protected", "binding", "version", "completion"} for result in failed):
+        return [{"kind": "ask", "reason": "Resolve the failed host requirement; do not modify protected sources or replace the contract."}]
+    steps = []
+    if output_failed:
+        steps.append({"kind": "repair_artifact", "paths": [r.get("path") for r in failed if r["kind"] == "artifact"],
+                      "instruction": "Inspect and fix only the failing artifact/business requirement within authorized scope."})
+    commands = [r for r in results if r["kind"] == "command" and (not r["verified"] or output_failed and
+                any("command:" + c.id == r["id"] and c.verify_final for c in contract.commands))]
+    for result in commands:
+        steps.append({"kind": "act", "requirement": result["id"], "action": result["required_action"],
+                      "instruction": "Execute the declared command with these exact required arguments; verify its exit/output."})
+    reads = [r["path"] for r in failed if r["kind"] == "read"]
+    if output_failed:
+        reads += contract.required_reads
+    reads += [a.path for a in contract.artifacts if a.require_readback and (commands or output_failed or
+              any(r["id"] == "readback:" + a.id and not r["verified"] for r in results))]
+    for path in dict.fromkeys(reads):
+        steps.append({"kind": "act", "action": {"name": "read_file", "arguments": {"path": path}},
+                      "instruction": "Read the current complete file after the commands; later mutations invalidate final readback."})
+    if state.plan and not all(step.done for step in state.plan.steps):
+        steps.append({"kind": "complete_step", "instruction": "Submit the active approved step with actual successful evidence."})
+    steps.append({"kind": "respond", "instruction": "Submit actual evidence_ids and required criteria_evidence; never invent or automatically bind IDs."})
+    return steps[:40]
+
+
+def completion_guidance(gate, state, history):
+    # Do not encourage environment work before approval, after changed input, or
+    # when an interrupted intent still needs explicit resolution.
+    if (state.completion_contract is None or not history.observations or state.contract_invalidated
+            or state.requires_replan or state.pending_approval or state.mode.value == "plan" and
+            (not state.plan or state.plan.approved_revision != state.plan.revision)):
+        return None
+    from kong.contracts import FinalResponse
+    probe = FinalResponse(content="verification status only")
+    problems = gate.check(state, probe, history)
+    feedback = rejection_feedback(gate, state, probe, history, problems)
+    feedback["instruction"] = ("This is current read-only verification status, not a completion decision. "
+        "Follow runtime phase/approval first. When no further tool is required, submit a corrected respond using actual IDs. "
+        "Do not repeat already verified work. No action or evidence is selected on your behalf.")
+    return feedback
+
+
 def rejection_feedback(gate, state, decision, history, problems):
     from kong.runtime.gates import result_evidence, subset
     from kong.runtime.completion import stable_bytes
@@ -84,7 +131,7 @@ def rejection_feedback(gate, state, decision, history, problems):
     additional_tool = bool(failed) or (state.requires_evidence and not successful) or bool(history.observations and not history.observations[-1].success)
     mutation = True if output_failed else None if uncertain_checks else False
     if additional_tool:
-        next_action = "Inspect the failed requirements. Reverify current files where required; do not repeat successful work or mutate protected sources."
+        next_action = "Follow the failed requirement issues and remaining_steps. Run required commands before final readback; use the declared fresh_python flag. Do not repeat verified work or mutate protected sources."
     elif state.plan and not all(step.done for step in state.plan.steps):
         next_action = "Complete the active approved step using existing evidence, then return a corrected respond."
     else:
@@ -96,6 +143,8 @@ def rejection_feedback(gate, state, decision, history, problems):
         unsatisfied.append("submission:final_evidence")
     return {"satisfied": [result["id"] for result in results if result["verified"]][:100],
             "unsatisfied": unsatisfied[:100], "reasons": problems[:12],
+            "requirement_issues": [{"id": r["id"], "issues": r.get("issues", [])} for r in failed][:30],
+            "remaining_steps": remaining_steps(state, results, failed, output_failed),
             "current_valid_observations": sorted(valid)[-12:],
             "historical_event_observations": sorted(historical)[-12:],
             "available_successful_observations": successful[-12:],

@@ -122,6 +122,43 @@ def test_plan_preapproval_never_gets_execution_guidance(tmp_path):
     assert not any(item.category == "runtime_feedback" for item in runtime.model.contexts[0].items)
 
 
+def test_guidance_survives_large_history_without_raising_budget(tmp_path):
+    runtime = make_runtime(tmp_path, [Act(actions=[
+        Action(name="process_exec", arguments={"argv": ["python", "check.py"], "fresh_python": True}),
+        Action(name="read_file", arguments={"path": "value.py"})]), FinalResponse(content="done", evidence_ids=["a2"])])
+    for index in range(30):
+        runtime.history.append("feedback", 0, old_diagnostic="noise" * 500, index=index)
+    budget = runtime.context_engine.budget.model_dump()
+    assert asyncio.run(runtime.run()).status == Status.COMPLETED
+    packet = runtime.model.contexts[-1]
+    assert packet.dropped and packet.estimated_input_tokens <= packet.budget.input_tokens
+    assert any(i.category == "runtime_feedback" and i.priority == 0 for i in packet.items)
+    assert runtime.context_engine.budget.model_dump() == budget
+
+
+def test_external_mutation_recomputes_guidance_instead_of_reusing_ready_state(tmp_path):
+    from kong.runtime.finalization import completion_guidance
+    runtime = make_runtime(tmp_path)
+    actions(runtime, ("process_exec", {"argv": ["python", "check.py"], "fresh_python": True}),
+            ("read_file", {"path": "value.py"}))
+    assert completion_guidance(CompletionGate(runtime.workspace), runtime.state, runtime.history)["additional_tool_required"] is False
+    (tmp_path / "value.py").write_text("value = 8\n", encoding="utf-8")
+    current = completion_guidance(CompletionGate(runtime.workspace), runtime.state, runtime.history)
+    assert current["additional_tool_required"] is True
+    assert "a2" not in current["current_valid_observations"]
+    assert "command:check" in current["unsatisfied"]
+
+
+def test_changed_constraint_removes_old_guidance_and_preserves_host_boundary(tmp_path):
+    from kong.runtime.finalization import completion_guidance
+    runtime = make_runtime(tmp_path)
+    actions(runtime, ("read_file", {"path": "value.py"}))
+    runtime.submit_input("constraint", "Use another value")
+    runtime._apply_inputs()
+    assert runtime.state.status == Status.WAITING_USER and runtime.state.contract_invalidated
+    assert completion_guidance(CompletionGate(runtime.workspace), runtime.state, runtime.history) is None
+
+
 def test_exact_text_diagnostic_explains_newline_without_relaxing_contract(tmp_path):
     workspace = Workspace(tmp_path)
     runtime = Runtime.new("write exact text", ScriptedModel([]), workspace, default_registry(workspace),
