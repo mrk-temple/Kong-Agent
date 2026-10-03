@@ -101,6 +101,16 @@ def test_verify_then_mutate_feedback_preserves_stale_rejection(tmp_path):
     assert feedback(runtime)["additional_tool_required"] is True
 
 
+def test_explicit_expected_nonzero_exit_remains_supported(tmp_path):
+    from kong.runtime.completion import contract_results
+    runtime = make_runtime(tmp_path)
+    runtime.state.completion_contract.commands[0].argv = ["python", "-c", "print('ok'); raise SystemExit(3)"]
+    runtime.state.completion_contract.commands[0].exit_code = 3
+    actions(runtime, ("process_exec", {"argv": runtime.state.completion_contract.commands[0].argv, "fresh_python": True}))
+    result = next(r for r in contract_results(runtime.state, runtime.history, runtime.workspace) if r["id"] == "command:check")
+    assert not runtime.history.observations[-1].success and result["verified"]
+
+
 def test_live_guidance_exists_before_first_submission_and_pins_current_ids(tmp_path):
     runtime = make_runtime(tmp_path, [Act(actions=[
         Action(name="process_exec", arguments={"argv": ["python", "check.py"], "fresh_python": True}),

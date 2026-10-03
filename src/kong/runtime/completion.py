@@ -219,17 +219,19 @@ def contract_results(state, history, workspace):
             index, obs = candidates[-1]
             output = obs.output if isinstance(obs.output, dict) else {}
             stdout = output.get("stdout")
-            conditions = [(obs.success, "command.observation_failed"),
-                (not obs.outcome_unknown, "command.effect_unknown"),
-                (not output.get("timed_out"), "command.timed_out"),
-                (type(output.get("exit_code")) is int and output["exit_code"] == command.exit_code, "command.exit_code_mismatch"),
-                (isinstance(stdout, str) and all(text in stdout for text in command.stdout_contains), "command.stdout_contains_missing")]
+            expected_failure = type(output.get("exit_code")) is int and command.exit_code != 0 and output["exit_code"] == command.exit_code
+            conditions = [(obs.success or expected_failure, "command.observation_failed", True, obs.success),
+                (not obs.outcome_unknown, "command.effect_unknown", False, obs.outcome_unknown),
+                (not output.get("timed_out"), "command.timed_out", False, output.get("timed_out")),
+                (type(output.get("exit_code")) is int and output["exit_code"] == command.exit_code, "command.exit_code_mismatch", command.exit_code, output.get("exit_code")),
+                (isinstance(stdout, str) and all(text in stdout for text in command.stdout_contains), "command.stdout_contains_missing", command.stdout_contains,
+                 [text for text in command.stdout_contains if not isinstance(stdout, str) or text not in stdout])]
             if command.stdout_exact is not None and (output.get("stdout_truncated") or stdout != command.stdout_exact):
                 issues.append({"code": "command.stdout_exact_mismatch"})
             if command.fresh_python:
-                conditions += [(obs.action.arguments.get("fresh_python") is True, "command.fresh_mode_missing"),
-                               (output.get("fresh_python_imports") is True, "command.fresh_marker_missing")]
-            issues += [{"code": code} for satisfied, code in conditions if not satisfied]
+                conditions += [(obs.action.arguments.get("fresh_python") is True, "command.fresh_mode_missing", True, obs.action.arguments.get("fresh_python")),
+                               (output.get("fresh_python_imports") is True, "command.fresh_marker_missing", True, output.get("fresh_python_imports"))]
+            issues += [{"code": code, "expected": expected, "actual": actual} for satisfied, code, expected, actual in conditions if not satisfied]
             valid = not issues
             if valid and command.verify_final:
                 criterion = Criterion(id="command", description="Final command verification", kind="tool_success",

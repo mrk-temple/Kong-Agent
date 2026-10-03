@@ -27,6 +27,21 @@ def test_protocol_error_has_one_visible_budgeted_repair(tmp_path):
     assert any(e.type == "model_error" for e in runtime.history.events)
 
 
+def test_local_protocol_repair_is_mandatory_context_without_extra_calls(tmp_path):
+    class CapturedModel(BrokenModel):
+        async def generate(self, context):
+            self.context = context
+            return await super().generate(context)
+    model = CapturedModel(1)
+    runtime = Runtime.new("chat", model, Workspace(tmp_path), default_registry(Workspace(tmp_path)))
+    for index in range(25):
+        runtime.history.append("feedback", 0, old="noise" * 500, index=index)
+    assert asyncio.run(runtime.run()).status == Status.COMPLETED
+    repair = next(i for i in model.context.items if i.content.startswith("DECISION REPAIR STATUS:"))
+    assert repair.priority == 0 and model.calls == runtime.state.turn_count == 2
+    assert not runtime.history.observations
+
+
 def test_repeated_protocol_errors_stop_and_http_errors_never_retry(tmp_path):
     for error, calls in [(ModelProtocolError,2),(ModelError,1)]:
         model = BrokenModel(3,error)

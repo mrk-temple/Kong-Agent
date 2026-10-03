@@ -539,6 +539,14 @@ class Runtime:
                             self.context_engine.supplemental_items.append(ContextItem(category="runtime_feedback", priority=0,
                                 content="PATCH FAILURE STATUS:\n" + json.dumps(patch_feedback, ensure_ascii=False, separators=(",", ":")),
                                 sources=[ContextSource(kind="observation", run_id=self.state.run_id, action_id=patch_feedback["failed_observation"])]))
+                    latest_model_event = next((e for e in reversed(self.history.events) if e.type in {"decision", "model_error"}), None)
+                    if latest_model_event and latest_model_event.type == "model_error":
+                        repair = next((e for e in reversed(self.history.events) if e.turn == latest_model_event.turn
+                                       and "protocol_rejected" in e.payload), None)
+                        if repair:
+                            self.context_engine.supplemental_items.append(ContextItem(category="runtime_feedback", priority=0,
+                                content="DECISION REPAIR STATUS:\n" + json.dumps(repair.payload, ensure_ascii=False, separators=(",", ":")),
+                                sources=[ContextSource(kind="event", run_id=self.state.run_id, event_index=self.history.events.index(repair))]))
                     with measure("context_build_seconds"):
                         context = await self.context_engine.prepare(thread=self.thread, state=self.state,
                                                                     history=self.history, tools=self.registry.definitions())
