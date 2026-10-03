@@ -31,13 +31,15 @@ def atomic_replace(source, target) -> None:
 
 
 class Snapshot(Contract):
-    schema_version: int = 3
+    schema_version: int = 4
     workspace: str
     state: RunState
     history: History = Field(default_factory=History)
     pending_action_id: str | None = None
     pending_action_ids: list[str] = Field(default_factory=list)
     queued_inputs: list[RunInput] = Field(default_factory=list)
+    cancel_input: RunInput | None = None
+    cancel_applied: bool = False
     constraints: list[str] = Field(default_factory=list)
     run_events: list[RunEvent] = Field(default_factory=list)
     driver: Literal["compatible", "demo"] = "compatible"
@@ -71,7 +73,7 @@ class RunStore:
 
     def load(self, run_id: str) -> Snapshot:
         snapshot = Snapshot.model_validate_json(self.path(run_id).read_text(encoding="utf-8"))
-        if snapshot.schema_version not in {1, 2, 3} or snapshot.state.run_id != run_id:
+        if snapshot.schema_version not in {1, 2, 3, 4} or snapshot.state.run_id != run_id:
             raise ValueError("Unsupported snapshot version or mismatched run ID")
         return snapshot
 

@@ -102,6 +102,8 @@ class Runtime:
         self.executor.permissions = permissions or PermissionPolicy()
         self.pending_action_ids: list[str] = []
         self.queued_inputs: list[RunInput] = []
+        self.cancel_input: RunInput | None = None
+        self.cancel_applied = False
         self.constraints: list[str] = []
         self.run_events: list[RunEvent] = []
         self._running = False
@@ -146,6 +148,9 @@ class Runtime:
         if snapshot.pending_action_id and snapshot.pending_action_id not in runtime.pending_action_ids:
             runtime.pending_action_ids.insert(0, snapshot.pending_action_id)
         runtime.queued_inputs = list(snapshot.queued_inputs)
+        runtime.cancel_input = snapshot.cancel_input
+        runtime.cancel_applied = snapshot.cancel_applied
+        runtime._cancel_requested = runtime.cancel_input is not None
         runtime.constraints = list(snapshot.constraints)
         runtime.run_events = list(snapshot.run_events)
         runtime.metrics = snapshot.metrics or RunMetrics(legacy_unknown=True)
@@ -176,6 +181,7 @@ class Runtime:
                         history=self.history, pending_action_id=self.pending_action_id, driver=self.driver,
                         thread_id=self.thread.thread_id, project_id=self.context_engine.project_id, metrics=self.metrics,
                         pending_action_ids=self.pending_action_ids, queued_inputs=self.queued_inputs,
+                        cancel_input=self.cancel_input, cancel_applied=self.cancel_applied,
                         constraints=self.constraints, run_events=self.run_events)
 
     def save(self) -> None:
@@ -195,26 +201,41 @@ class Runtime:
 
     def submit_input(self, kind: str, text: str = "") -> str:
         """Call on the owning event loop; other threads use call_soon_threadsafe."""
-        if self.state.status != Status.RUNNING or len(self.queued_inputs) >= 32:
+        if kind == "cancel" and self.cancel_input is not None:
+            return self.cancel_input.id  # One durable request, including duplicate delivery after stopping.
+        if self.state.status != Status.RUNNING or (kind != "cancel" and len(self.queued_inputs) >= 32):
             raise ValueError("Input queue requires a running task and has a 32-message limit")
         item = RunInput(kind=kind, text=text.strip())
         if item.kind != "cancel" and not item.text:
             raise ValueError("A constraint or replacement goal requires text")
-        self.queued_inputs.append(item)
+        if item.kind == "cancel":
+            self.cancel_input = item
+            self.cancel_applied = False
+            self._cancel_requested = True
+        else:
+            self.queued_inputs.append(item)
         self._input_signal.set()
         self.emit("input_queued", {"input_id": item.id, "kind": item.kind, "boundary": "before_next_action_or_decision"})
         if kind == "cancel" and self._model_task and not self._model_task.done():
             self._model_task.cancel()
         if kind == "cancel":
-            self._cancel_requested = True
             if self._active_cancellable_task and not self._active_cancellable_task.done():
                 self._active_cancellable_task.cancel()
         return item.id
 
     def _apply_inputs(self) -> bool:
-        if not self.queued_inputs:
+        if not self._inputs_pending():
             return False
         items, self.queued_inputs = self.queued_inputs, []
+        if self.cancel_input is not None and not self.cancel_applied:
+            items.append(self.cancel_input)
+            self.cancel_applied = True
+        # Versions 1..3 persisted cancel in the ordinary queue.
+        legacy_cancel = next((item for item in items if item.kind == "cancel"), None)
+        if legacy_cancel is not None:
+            self.cancel_input = legacy_cancel
+            self.cancel_applied = True
+            self._cancel_requested = True
         self._input_signal.clear()
         cancelling = any(item.kind == "cancel" for item in items)
         for item in items:
@@ -239,6 +260,7 @@ class Runtime:
         if cancelling:
             self.state.status = Status.STOPPED
             self.state.stop_reason = "user_interrupted"
+            self.state.pending_question = None
         elif self.state.status == Status.RUNNING:
             self.state.phase = Phase.DECIDE
         self.save()
@@ -247,6 +269,9 @@ class Runtime:
         for item in items:
             self.emit("input_applied", {"input_id": item.id, "kind": item.kind})
         return True
+
+    def _inputs_pending(self) -> bool:
+        return bool(self.queued_inputs) or (self.cancel_input is not None and not self.cancel_applied)
 
     def _stream_progress(self, data):
         if perf_counter() - self._last_delta >= 0.5:
@@ -257,6 +282,10 @@ class Runtime:
         if self.pending_action_id:
             raise ValueError("Resolve the interrupted action with /resolve before continuing")
         self.controller.human(self.state, self.history, command, **kwargs)
+        if command == "resume":
+            self.cancel_input = None
+            self.cancel_applied = False
+            self._cancel_requested = False
         self.save()
 
     async def memory_command(self, command: str, *, item_id: str = "", text: str = "",
@@ -339,6 +368,13 @@ class Runtime:
             self.state.pending_question = "还有结果未知的动作：" + ", ".join(self.pending_action_ids) + "。请逐项 /resolve。"
             self.save()
             return
+        if self.cancel_input is not None:
+            # Resolving an effect is not permission to resume a cancelled run.
+            self.state.status = Status.STOPPED
+            self.state.stop_reason = "user_interrupted"
+            self.state.pending_question = None
+            self.save()
+            return
         if self.state.status == Status.STOPPED:
             self.state.status = Status.WAITING_USER
             self.state.pending_question = "已核查未知动作；继续检查实际环境。"
@@ -349,7 +385,7 @@ class Runtime:
         if self._running:
             raise ValueError("This Runtime already has an active driver")
         self._running = True
-        self._cancel_requested = any(i.kind == "cancel" for i in self.queued_inputs)
+        self._cancel_requested = self.cancel_input is not None or any(i.kind == "cancel" for i in self.queued_inputs)
         started = perf_counter()
         try:
             policy = self.executor.permissions
@@ -406,6 +442,7 @@ class Runtime:
                 self.metrics.tokens[key] = self.metrics.tokens.get(key, 0) + value
 
     async def _run_impl(self) -> RunState:
+        self._apply_inputs()  # A persisted priority cancel also applies before a restored paused driver.
         if self.pending_action_id and self.state.status == Status.RUNNING:
             self.state.status = Status.WAITING_USER
             self.state.pending_question = "仍有结果未知的动作；请先 /resolve。"
@@ -583,7 +620,7 @@ class Runtime:
             for action in group:
                 # No await between the safe input boundary and intent allocation.
                 # A callback may submit input, so check before allocating every member.
-                if self.queued_inputs:
+                if self._inputs_pending():
                     break
                 action_id = f"a{1 + sum(event.type == 'action_intent' for event in self.history.events)}"
                 self.pending_action_ids.append(action_id)
@@ -593,6 +630,17 @@ class Runtime:
                 self.emit("action_started", {"id": action_id, "tool": action.name,
                                             "operation": action.arguments.get("operation", "run")})
                 work.append((action_id, action, versions))
+            if self._inputs_pending():
+                # Callbacks can request cancel after intent allocation but before
+                # executor dispatch. These effects are known not to have started.
+                for action_id, action, versions in work:
+                    from kong.tools.base import ToolResult
+                    self._record_result(action_id, action, versions,
+                        ToolResult(success=False, error="Action not started: new user input at dispatch boundary."))
+                self._apply_inputs()
+                self.emit("batch_revoked", {"remaining": len(decision.actions) - index,
+                                            "reason": "new_user_input_before_dispatch"})
+                return True
             tool_wall_start = perf_counter()
             tasks = [asyncio.create_task(self._execute_timed(action_id, action)) for action_id, action, _ in work]
             if len(work) == 1 and work[0][1].name in {"process_exec", "terminal", "mcp", "browser"}:
