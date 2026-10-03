@@ -528,6 +528,14 @@ class Runtime:
                         self.context_engine.supplemental_items.append(ContextItem(category="runtime_feedback", priority=0,
                             content="RUNTIME VERIFICATION STATUS:\n" + json.dumps(guidance, ensure_ascii=False, separators=(",", ":")),
                             sources=[ContextSource(kind="state", run_id=self.state.run_id, path="completion_contract")]))
+                    if not guidance or guidance["additional_tool_required"]:
+                        from kong.runtime.recovery_feedback import patch_failure_guidance
+                        with measure("validation_seconds"):
+                            patch_feedback = patch_failure_guidance(self.state, self.history, self.workspace)
+                        if patch_feedback:
+                            self.context_engine.supplemental_items.append(ContextItem(category="runtime_feedback", priority=0,
+                                content="PATCH FAILURE STATUS:\n" + json.dumps(patch_feedback, ensure_ascii=False, separators=(",", ":")),
+                                sources=[ContextSource(kind="observation", run_id=self.state.run_id, action_id=patch_feedback["failed_observation"])]))
                     with measure("context_build_seconds"):
                         context = await self.context_engine.prepare(thread=self.thread, state=self.state,
                                                                     history=self.history, tools=self.registry.definitions())
