@@ -1,2 +1,2 @@
 """Kong: a goal-driven adaptive agent runtime."""
-__version__ = "0.4.0rc1"
+__version__ = "0.4.0rc2"

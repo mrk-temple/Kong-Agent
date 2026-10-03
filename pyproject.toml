@@ -1,6 +1,6 @@
 [project]
 name = "kong-agent"
-version = "0.4.0rc1"
+version = "0.4.0rc2"
 description = "Kong: a goal-driven adaptive agent runtime"
 readme = "README.md"
 requires-python = ">=3.12"
