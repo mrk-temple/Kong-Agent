@@ -2,6 +2,8 @@
 
 Kong-Eval 是一组固定、可独立核验的小任务，用来回答“这台 Runtime 在**受约束契约**下做成了什么、失败在哪里”，不提供通用 Agent 排行榜，也不把 Runtime 的 `completed` 当作外部成功。任务定义与分母以 [`src/kong/evaluation/specs.py`](src/kong/evaluation/specs.py) 为准，本文解释契约、核验方式与已记录结果的边界。
 
+RC3 默认环境完成要求充分声明的值/结果条件。旧 fixture 的存在性/工具成功输入可能正确停在待验收状态，因此不能沿用历史离线分数。当前工程测试对原 grader 的机械控制检查显式采用 `offline-fixture-mechanical-rc3` 输入适配，任务、隐藏答案、fixture 决策及 grader 保持原样；它不是默认业务完成，也不是模型成绩。真实冻结批次继续使用调用方声明的 code/data 合同，保留原模型、权限、24 turn/180 秒预算和所有尝试。历史结果按原源码与输入保留，不重判。
+
 ## 三类结果，分开记录
 
 | 类别 | 是什么 | 入口 |

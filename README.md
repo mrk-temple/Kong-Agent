@@ -2,12 +2,12 @@
 
 一个面向个人本地任务的单 Agent Runtime：模型只提出决策，授权、执行、证据与验收由 Runtime 完成。
 
-当前版本 **0.4.0rc1**，是待阶段验收的本地候选。已验证环境为 Windows / Python 3.12；需要 Python 3.12+。
+当前版本 **0.4.0rc3**，是待冻结验收的本地候选。需要 Python 3.12+；版本结论以该源码身份的实际回归与完整批次为准。
 
 当前开发分支包含未发布的 V0.4A 正确性候选。工程回归已通过，真实任务质量门槛仍未通过；具体测量口径、失败与限制见 [EVALUATION](EVALUATION.md)。
 支持 Chat Completions 兼容模型接口，模型通过结构化 JSON 提出决策。
 
-**发布状态：本仓库以允许清单快照的全新历史公开（内部 `docs/` 等私有材料不随仓库发布），地址 github.com/mrk-temple/Kong-Agent。以 [MIT 许可证](LICENSE) 授权。**
+**交付状态：本候选仅本地提交；公开发布需另行确认许可、版权与使用授权，并检查允许清单快照。内部 `docs/` 不随候选包交付。**
 
 ## 30 秒了解
 
@@ -46,6 +46,10 @@ flowchart TD
 图中不存在沙箱或自动成功判定——“完成”只表示显式条件与已记录证据通过。
 
 ## 五分钟离线体验
+
+默认环境任务须有覆盖交付物的声明条件：代码/数据使用 `--completion-contract`，或提供精确值/结果 `--criteria`。文件存在、包含某个词、普通工具成功不足以确认业务完成；缺少条件时保存产物并进入 `waiting_user / acceptance_criteria_required`，工具重试不能增加验收权限。普通无工具对话仍可直接结束。
+
+调用方明确只做机械控制检查时可用 `run --completion-scope mechanical`，API 使用 `Runtime.new(..., completion_scope="mechanical")`；此时输出和报告明确标识业务完成未确认。完整检查较多来源文件时，可重复指定 `--progress-path`（API `progress_paths`），范围内的首次读取可以支持有界续租。任意新输出、错误写入和范围外读取仅计活动次数；完整自然语言正确性不由这些指标推导。
 
 在源码目录执行（需先安装 Python 3.12+ 和 uv）：
 

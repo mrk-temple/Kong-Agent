@@ -1,4 +1,4 @@
-# ARCHITECTURE — Kong-Agent 0.3.0
+# ARCHITECTURE — Kong-Agent 0.4.0rc3
 
 本文描述当前代码结构与控制闭环，节点均对照 `src/kong/` 实际实现；能力限制与验证方式见 [README](README.md) 与 [PUBLIC_RELEASE_CHECKLIST](PUBLIC_RELEASE_CHECKLIST.md)。行号会随修改漂移，引用以模块与符号名为准。
 
@@ -6,7 +6,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| `kong/runtime/` | 唯一执行循环与权限边界：`loop.py`（循环）、`controller.py`（授权与状态迁移）、`gates.py`（进展门与完成门）、`policy.py`（模式预算）、`state.py`（运行状态构造） |
+| `kong/runtime/` | 唯一执行循环与权限边界：`loop.py`（循环）、`controller.py`（授权与状态迁移）、`gates.py`（完成门）、`progress.py`（有界声明进展）、`acceptance.py`（默认验收覆盖）、`evidence.py`（指纹/同步核验事务）、`policy.py`（模式预算）、`state.py`（运行状态构造） |
 | `kong/contracts.py` | 决策、动作、观察、事件、状态、迁移、验收条件等全部数据契约 |
 | `kong/tools/` | 工具契约（`Tool` / `ToolResult`）、注册表、参数校验、`ToolExecutor` 与内置文件工具 |
 | `kong/models/` | 模型协议 `Model.generate(context) -> Decision`、Chat Completions 兼容实现、离线 `ScriptedModel` |
