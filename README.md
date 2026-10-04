@@ -248,7 +248,11 @@ uv run python examples/prepare_public_release.py
 
 ## 调用方声明完成合同
 
-`kong run "任务目标" --completion-contract contract.json` 可加载版本 1 的 `code` 或 `data` 合同。
+`kong run "任务目标" --completion-contract contract.json` 可加载版本 1 或 2 的 `code` 或 `data` 合同。版本 1 的原有语义与绑定身份保持兼容。
+
+版本 2 增加 `resource_closures: [{"id":"terminal","tool":"terminal"},{"id":"browser","tool":"browser"}]`：所声明工具在本 Run 实际打开的每个资源都必须有成功关闭收据，提交时须引用相应真实 action ID。未知打开/关闭结果仍须人工核对，不自动关闭或重放。关闭动作之后再完整回读最终文本/JSON 产物，避免以旧证据提交。
+
+二进制产物可用 `format:"file"`、`binary_prefix_hex:"89504e470d0a1a0a"`、`require_readback:false` 声明 PNG 文件头；这仅验证当前字节前缀，不证明图像内容或完整格式。合同还必须包含最终完整回读或实际最终核验命令作为证据锚点。调用方负责提供充分条件，模型不能为自己的输出补造验收权限。
 合同由调用方提供，模型无法改写。它补充现有 `--criteria`，把最终文件、保护源、真实命令退出码/输出、JSON 字段类型/允许值、CSV 列名/行数/精确有序行，以及有限 CSV→JSON 汇总规则变为确定性检查。自然语言目标不会自动转为完整合同。
 
 例如代码修复合同：
