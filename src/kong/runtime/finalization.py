@@ -66,14 +66,23 @@ def remaining_steps(state, results, failed, output_failed, *, acceptance_require
         steps.append({"kind": "recover_last_action", "instruction": "Inspect the latest failure and recover or ask; "
                       "successful older receipts do not override it. Do not automatically replay a side effect."})
     reads = [r["path"] for r in failed if r["kind"] == "read"]
+    cleanup_failed = any(r["kind"] == "cleanup" for r in failed)
     if output_failed and contract:
         reads += contract.required_reads
     if contract:
-        reads += [a.path for a in contract.artifacts if a.require_readback and (commands or legacy or output_failed or
+        reads += [a.path for a in contract.artifacts if a.require_readback and (commands or legacy or output_failed or cleanup_failed or
                   any(r["id"] == "readback:" + a.id and not r["verified"] for r in results))]
+    for result in failed:
+        if result["kind"] == "cleanup":
+            for action in result.get("required_actions", []):
+                steps.append({"kind": "close_resource", "requirement": result["id"], "action": action,
+                              "instruction": "After final verification, close this actually observed resource and retain the real receipt."})
+            if not result.get("required_actions"):
+                steps.append({"kind": "inspect_resource", "requirement": result["id"], "issues": result.get("issues", []),
+                              "instruction": "Follow the declared task lifecycle. Resolve unknown effects explicitly; do not invent IDs or replay a close."})
     for path in dict.fromkeys(reads):
         steps.append({"kind": "act", "action": {"name": "read_file", "arguments": {"path": path}},
-                      "instruction": "Read the current complete file after the commands; later mutations invalidate final readback."})
+                      "instruction": "Read the current complete file after commands and resource closes; later mutations invalidate final readback."})
     if state.plan and not all(step.done for step in state.plan.steps):
         steps.append({"kind": "complete_step", "instruction": "Submit the active approved step with actual successful evidence."})
     steps.append({"kind": "respond", "instruction": "Submit actual evidence_ids and required criteria_evidence; never invent or automatically bind IDs."})
@@ -201,6 +210,8 @@ def rejection_feedback(gate, state, decision, history, problems):
         unsatisfied.append("submission:evidence_ids")
     if any(problem.startswith("Contract final evidence") for problem in problems):
         unsatisfied.append("submission:final_evidence")
+    if any(problem.startswith("Contract cleanup evidence") for problem in problems):
+        unsatisfied.append("submission:cleanup_evidence")
     return {"satisfied": [result["id"] for result in results if result["verified"]][:100],
             "unsatisfied": unsatisfied[:100], "reasons": problems[:12],
             "requirement_issues": [{"id": r["id"], "issues": r.get("issues", [])} for r in failed][:30],

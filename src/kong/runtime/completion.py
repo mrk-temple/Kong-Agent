@@ -158,6 +158,8 @@ def contract_results(state, history, workspace):
         try:
             data = stable_bytes(workspace, artifact.path)
             valid = True
+            if artifact.binary_prefix_hex is not None:
+                valid = data.startswith(bytes.fromhex(artifact.binary_prefix_hex))
             if artifact.format == "text":
                 text = data.decode("utf-8")
                 valid = artifact.expected_text is None or text == artifact.expected_text
@@ -252,6 +254,12 @@ def contract_results(state, history, workspace):
         add("command:" + command.id, "command", valid, "Required command/exit/output: " + command.id, ids, issues,
             required_action=required, expected_exit_code=command.exit_code, expected_stdout_contains=command.stdout_contains,
             latest_matching_observation=candidates[-1][1].action_id if candidates else None)
+    from kong.runtime.resource_closure import closure_result
+    for requirement in contract.resource_closures:
+        valid, ids, issues, actions = closure_result(requirement, history)
+        add("cleanup:" + requirement.id, "cleanup", valid,
+            "Close every observed " + requirement.tool + " resource with actual receipts", ids, issues,
+            required_actions=actions, tool=requirement.tool)
     # Detect external changes across the entire read-only validation window.
     stable = all(value is not None and value == fingerprint(workspace, path) for path, value in initial_versions.items())
     add("contract:stable", "version", stable, "Contract files stable throughout final validation")

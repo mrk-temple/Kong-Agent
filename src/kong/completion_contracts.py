@@ -24,6 +24,7 @@ class ArtifactRequirement(Declaration):
     format: Literal["file", "text", "json", "csv"] = "file"
     require_readback: bool = True
     expected_text: str | None = Field(default=None, max_length=1_000_000)
+    binary_prefix_hex: str | None = Field(default=None, min_length=2, max_length=128)
     exact_json: dict[str, Any] | None = None
     json_fields: list[JsonField] = Field(default_factory=list, max_length=100)
     additional_keys: bool = True
@@ -33,6 +34,9 @@ class ArtifactRequirement(Declaration):
 
     @model_validator(mode="after")
     def appropriate_fields(self):
+        if self.binary_prefix_hex is not None:
+            if self.format != "file" or len(self.binary_prefix_hex) % 2 or any(c not in "0123456789abcdefABCDEF" for c in self.binary_prefix_hex):
+                raise ValueError("binary_prefix_hex requires format=file and bounded hexadecimal bytes")
         if self.expected_text is not None and self.format != "text":
             raise ValueError("expected_text requires format=text")
         if (self.exact_json is not None or self.json_fields or not self.additional_keys) and self.format != "json":
@@ -80,13 +84,19 @@ class CsvAggregate(Declaration):
         return self
 
 
+class ResourceClosureRequirement(Declaration):
+    id: str = Field(min_length=1, max_length=200)
+    tool: Literal["terminal", "browser"]
+
+
 class CompletionContract(Declaration):
-    version: Literal[1] = 1
+    version: Literal[1, 2] = 1
     family: Literal["code", "data"]
     artifacts: list[ArtifactRequirement] = Field(default_factory=list, max_length=100)
     protected_paths: list[str] = Field(default_factory=list, max_length=100)
     commands: list[CommandRequirement] = Field(default_factory=list, max_length=30)
     aggregates: list[CsvAggregate] = Field(default_factory=list, max_length=30)
+    resource_closures: list[ResourceClosureRequirement] = Field(default_factory=list, max_length=10)
     required_reads: list[str] = Field(default_factory=list, max_length=100)
     read_before_ask: list[str] = Field(default_factory=list, max_length=100)
     required_question: str | None = Field(default=None, max_length=16000)
@@ -94,11 +104,15 @@ class CompletionContract(Declaration):
 
     @model_validator(mode="after")
     def coherent_contract(self):
-        for items in (self.artifacts, self.commands, self.aggregates):
+        if self.version == 1 and (self.resource_closures or any(a.binary_prefix_hex is not None for a in self.artifacts)):
+            raise ValueError("Resource closure and binary prefix conditions require version=2")
+        for items in (self.artifacts, self.commands, self.aggregates, self.resource_closures):
             if len({item.id for item in items}) != len(items):
                 raise ValueError("Requirement IDs must be unique within each section")
         if self.allow_completion and not self.artifacts:
             raise ValueError("Completion requires declared final artifacts")
+        if self.version == 2 and self.allow_completion and not (any(a.require_readback for a in self.artifacts) or any(c.verify_final for c in self.commands)):
+            raise ValueError("Completion requires a final readback or verification evidence anchor")
         if self.family == "code" and (not self.commands or not any(c.verify_final for c in self.commands)):
             raise ValueError("Code completion requires a final verification command")
         for command in self.commands:
@@ -107,7 +121,7 @@ class CompletionContract(Declaration):
                 raise ValueError("Fresh Python verification uses executable alias python")
             if self.family == "code" and command.verify_final and executable in {"python", "python.exe", "python3"} and not command.fresh_python:
                 raise ValueError("Final Python source verification requires fresh_python=true")
-        if self.family == "data" and any(not artifact.require_readback for artifact in self.artifacts):
+        if self.family == "data" and any(not artifact.require_readback and artifact.binary_prefix_hex is None for artifact in self.artifacts):
             raise ValueError("Data artifacts require a final readback")
         by_id = {item.id: item for item in self.artifacts}
         for aggregate in self.aggregates:
@@ -119,6 +133,14 @@ class CompletionContract(Declaration):
     def version_paths(self) -> list[str]:
         return sorted(set([a.path for a in self.artifacts] + self.protected_paths + self.required_reads + self.read_before_ask))
 
+    def identity_dump(self):
+        result = self.model_dump(mode="json")
+        if self.version == 1:
+            result.pop("resource_closures")
+            for artifact in result["artifacts"]:
+                artifact.pop("binary_prefix_hex")
+        return result
+
 
 def has_business_conditions(contract):
     if not contract.allow_completion:
@@ -126,7 +148,7 @@ def has_business_conditions(contract):
     if contract.family == "code":
         return any(command.verify_final for command in contract.commands)
     return bool(contract.artifacts) and all(
-        artifact.expected_text is not None or artifact.exact_json is not None or artifact.json_fields
+        artifact.expected_text is not None or artifact.binary_prefix_hex is not None or artifact.exact_json is not None or artifact.json_fields
         or artifact.csv_columns or artifact.row_count is not None or artifact.csv_rows is not None
         or any(rule.artifact_id == artifact.id for rule in contract.aggregates)
         for artifact in contract.artifacts)

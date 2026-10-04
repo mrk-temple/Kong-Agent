@@ -162,7 +162,7 @@ class Runtime:
         self.state.contract_protected_versions = protected
         self.state.contract_invalidated = False
         ProgressGate.reset_scope(self.state)
-        self.history.append("feedback", self.state.turn_count, completion_contract_bound=digest(contract.model_dump(mode="json")))
+        self.history.append("feedback", self.state.turn_count, completion_contract_bound=digest(contract.identity_dump()))
         self.save()
 
     @classmethod

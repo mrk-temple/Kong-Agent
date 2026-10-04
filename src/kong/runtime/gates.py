@@ -169,6 +169,9 @@ class CompletionGate:
                          and (r["kind"] == "readback" or r["id"] in final_commands) for id_ in r["evidence_ids"]}
             if not final_ids.intersection(decision.evidence_ids):
                 problems.append("Contract final evidence binding requires an ID from current final readback or verification.")
+            close_ids = {id_ for r in verified_contract if r["kind"] == "cleanup" and r["verified"] for id_ in r["evidence_ids"]}
+            if not close_ids <= set(decision.evidence_ids):
+                problems.append("Contract cleanup evidence binding requires the actual close IDs for every opened resource.")
         return problems
 
     @verified_pass("rows")
