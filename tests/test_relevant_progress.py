@@ -93,6 +93,7 @@ def test_old_activity_snapshot_cannot_renew_or_reset_budget(tmp_path):
     restored = Runtime(rt.model, rt.workspace, rt.registry, RunState.model_validate(data), history=History())
     assert not ProgressGate.can_renew(restored.state)
     assert restored.state.progress_state.activity_count == 9
+    assert run_report(restored)["progress"]["task_credit_count"] == 0
     assert (restored.state.turn_count, restored.state.turn_budget, restored.state.hard_turn_limit) == (10,12,24)
 
 

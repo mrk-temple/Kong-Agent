@@ -120,7 +120,8 @@ class Runtime:
             # Historic novel-output points are activity, never new lease authority.
             p = self.state.progress_state
             p.activity_count = p.progress_count
-            p.checkpoint_progress = p.progress_count
+            p.progress_count = 0
+            p.checkpoint_progress = 0
             p.progress_version = 2
         if progress_paths is not None:
             if history is not None:

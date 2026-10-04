@@ -35,6 +35,17 @@ def test_default_wrong_json_is_paused_for_acceptance_not_completed(tmp_path):
     assert run_report(runtime)["verification"]["business_acceptance_declared"] is False
 
 
+def test_preexisting_weak_artifact_without_model_tools_still_needs_acceptance(tmp_path):
+    (tmp_path / "report.json").write_text('{"included_statuses":2}', encoding="utf-8")
+    workspace = Workspace(tmp_path)
+    runtime = Runtime.new("complete the correct business report", ScriptedModel([FinalResponse(content="done")]),
+                          workspace, default_registry(workspace))
+    runtime.state.success_criteria = [Criterion(id="out", description="report", kind="file_exists", path="report.json")]
+    assert asyncio.run(runtime.run()).status == Status.WAITING_USER
+    assert runtime.state.final_output is None and not runtime.history.observations
+    assert runtime.metrics.model_calls == 1
+
+
 def test_irrelevant_exact_condition_does_not_cover_a_weak_output(tmp_path):
     runtime = make(tmp_path)
     (tmp_path / "other.txt").write_text("OK", encoding="utf-8")
