@@ -1,5 +1,5 @@
 """Describe a rejected submission without executing or binding any action."""
-from kong.runtime.evidence import fresh
+from kong.runtime.evidence import fresh, verified_pass
 
 
 def criterion_details(criterion, history, workspace, state, verified):
@@ -80,6 +80,7 @@ def remaining_steps(state, results, failed, output_failed, *, acceptance_require
     return steps[:40]
 
 
+@verified_pass("feedback")
 def completion_guidance(gate, state, history):
     # Do not encourage environment work before approval, after changed input, or
     # when an interrupted intent still needs explicit resolution.
@@ -97,6 +98,7 @@ def completion_guidance(gate, state, history):
     return feedback
 
 
+@verified_pass("feedback")
 def rejection_feedback(gate, state, decision, history, problems):
     from kong.runtime.gates import result_evidence, subset
     from kong.runtime.completion import stable_bytes

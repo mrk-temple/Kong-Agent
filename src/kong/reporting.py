@@ -70,7 +70,10 @@ def run_report(runtime):
     metrics["history_bytes"] = len(json.dumps(history.model_dump(mode="json"), ensure_ascii=False,
                                                separators=(",", ":")).encode("utf-8"))
     metrics["attribution_note"] = ("Measured spans overlap: validation can include hashing; model/tool waits can include validation and event persistence. "
-        "Do not sum these spans. Hash counters count visits and bytes read, including repeated files; artifact_count is the last capture scope size. "
+        "Do not sum these spans. hash_requests are logical requests; hash_cache_hits reuse only a synchronous pass. "
+        "hash_calls/hashed_file_count/hashed_bytes count actual scans and reads, including final byte revalidation; "
+        "hash_validation_reads counts root rescans. semantic_file_reads/semantic_bytes separately count parser reads. "
+        "artifact_count is the last capture scope size. "
         "Measurements cover this driver, direct action batches and runtime saves; restored history is partial. "
         "The saved snapshot lags its own final serialization duration/size by one save; this live report records the last completed save. "
         "Report generation is excluded. history_bytes is one compact UTF-8 serialization at report time.")

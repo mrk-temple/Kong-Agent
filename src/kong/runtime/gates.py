@@ -3,7 +3,7 @@ import hashlib
 
 from kong.contracts import FinalResponse, History, RunState
 from kong.workspace import Workspace
-from kong.runtime.evidence import fresh
+from kong.runtime.evidence import fresh, register_semantic_read, verified_pass
 from kong.runtime.metrics import attributed
 from kong.runtime.progress import ProgressGate  # Public compatibility import.
 
@@ -76,6 +76,7 @@ class CompletionGate:
         self.file_versions = {}
 
     @attributed("validation_seconds")
+    @verified_pass("problems")
     def check(self, state: RunState, decision: FinalResponse, history: History) -> list[str]:
         problems: list[str] = []
         from kong.runtime.acceptance import acceptance_problem
@@ -143,6 +144,7 @@ class CompletionGate:
                         after = path.stat()
                         valid = len(data) <= limit and (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns)
                         if valid:
+                            register_semantic_read(self.workspace, path, data)
                             self.file_versions[criterion.id] = {"path":criterion.path, "bytes":len(data),
                                 "sha256":hashlib.sha256(data).hexdigest()}
                         if valid and criterion.kind != "file_exists":
@@ -169,6 +171,7 @@ class CompletionGate:
                 problems.append("Contract final evidence binding requires an ID from current final readback or verification.")
         return problems
 
+    @verified_pass("rows")
     def criteria_results(self, state, history, evidence):
         results = []
         criteria = [("goal", c) for c in state.success_criteria]

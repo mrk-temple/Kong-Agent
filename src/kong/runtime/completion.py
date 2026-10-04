@@ -6,7 +6,7 @@ import math
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from kong.contracts import Criterion
-from kong.runtime.evidence import fingerprint, fresh
+from kong.runtime.evidence import fingerprint, fresh, register_semantic_read, verified_pass
 
 
 def stable_bytes(workspace, path):
@@ -14,10 +14,12 @@ def stable_bytes(workspace, path):
     before = resolved.stat()
     if not resolved.is_file() or before.st_size > 1_000_000:
         raise ValueError("Missing file or contract verification size limit")
-    data = resolved.read_bytes()
+    with resolved.open("rb") as stream:
+        data = stream.read(1_000_001)
     after = resolved.stat()
     if len(data) > 1_000_000 or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise ValueError("File changed during validation")
+    register_semantic_read(workspace, resolved, data)
     return data
 
 
@@ -92,6 +94,7 @@ def read_evidence(path, state, history, workspace, *, final=False, issues=None):
     return [obs.action_id]
 
 
+@verified_pass("problems", workspace_arg=3)
 def ask_problems(state, decision, history, workspace):
     contract = state.completion_contract
     if contract is None:
@@ -129,6 +132,7 @@ def aggregate_matches(rule, artifact, workspace):
     return type(actual) in {int, float} and Decimal(str(actual)) == total
 
 
+@verified_pass("rows", workspace_arg=2)
 def contract_results(state, history, workspace):
     contract = state.completion_contract
     if contract is None:
