@@ -61,5 +61,6 @@ def test_distinct_skill_preparation_gets_bounded_startup_allowance(tmp_path):
     asyncio.run(runtime.run())
     assert (tmp_path / "result.txt").read_text() == "ok"
     assert runtime.state.turn_budget == 6
-    assert runtime.state.progress_state.progress_count == 1
+    assert runtime.state.progress_state.activity_count == 1
+    assert runtime.state.progress_state.progress_count == 0
     assert sum(bool(e.payload.get("skill_preparation_allowance")) for e in runtime.history.events) == 1

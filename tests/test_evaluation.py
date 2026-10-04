@@ -4,7 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kong.contracts import Action, History, Observation, RunState, Status
-from kong.evaluation.runner import _status, run_suite, sha256_file
+from kong.evaluation.runner import _status, sha256_file
+from test_evaluation_profiles import mechanical_fixture_suite
 from kong.evaluation.specs import CASES
 from kong.evaluation.verifiers import verify
 
@@ -19,13 +20,13 @@ def test_manifest_has_twelve_bounded_tasks_without_research_answer_in_goal():
 
 def test_exact_mcp_fixture_satisfies_new_contract_and_preserves_old_bytes(tmp_path):
     for group, expected in [("legacy12_a3", b"42\n"), ("legacy12_contracts", b"42")]:
-        root, summary = asyncio.run(run_suite(tmp_path / group, task_set=group, case_ids=["mcp_add"], repetitions=1))
+        root, summary = asyncio.run(mechanical_fixture_suite(tmp_path / group, task_set=group, case_ids=["mcp_add"], repetitions=1))
         assert summary["counts"]["success"] == 1 and summary["complete"]
         assert (root / "cases/mcp_add/trial-01/workspace/result.txt").read_bytes() == expected
 
 
 def test_offline_trials_are_independent_and_retained(tmp_path):
-    root, summary = asyncio.run(run_suite(tmp_path, case_ids=["tool_error_recovery", "unknown_action_restore", "plan_approval"], repetitions=2))
+    root, summary = asyncio.run(mechanical_fixture_suite(tmp_path, case_ids=["tool_error_recovery", "unknown_action_restore", "plan_approval"], repetitions=2))
     assert summary["runs"] == 6
     assert summary["counts"] == {"success":4, "failed":0, "expected_approval":2, "environment_error":0, "timeout":0}
     assert summary["model_score"] is None
@@ -112,7 +113,7 @@ def test_timeout_and_environment_error_are_distinct():
 
 def test_browser_accepts_url_read_after_start_but_before_open(tmp_path):
     from kong.storage import RunStore
-    root, summary = asyncio.run(run_suite(tmp_path,case_ids=["browser_form"],repetitions=1,task_set="legacy12_a3"))
+    root, summary = asyncio.run(mechanical_fixture_suite(tmp_path,case_ids=["browser_form"],repetitions=1,task_set="legacy12_a3"))
     result_path = Path(summary["results"][0]["result"])
     result = json.loads(result_path.read_text())
     workspace = result_path.parent / "workspace"

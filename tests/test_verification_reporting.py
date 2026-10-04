@@ -10,16 +10,17 @@ from kong.tools.defaults import default_registry
 from kong.workspace import Workspace
 
 
-def test_weak_file_exists_is_reported_as_mechanical_acceptance(tmp_path):
+def test_default_weak_file_exists_is_reported_as_unaccepted(tmp_path):
     workspace = Workspace(tmp_path)
     model = ScriptedModel([Act(actions=[Action(name="write_file", arguments={"path": "out.json", "content": '{"included_statuses":2}'})]),
                            FinalResponse(content="done", evidence_ids=["a1"])])
     runtime = Runtime.new("make correct report", model, workspace, default_registry(workspace))
     runtime.state.success_criteria = [Criterion(id="out", description="output", kind="file_exists", path="out.json")]
-    assert asyncio.run(runtime.run()).status == Status.COMPLETED
+    assert asyncio.run(runtime.run()).status == Status.WAITING_USER
     acceptance = run_report(runtime)["verification"]
     assert acceptance["coverage"] == "mechanical_only"
     assert acceptance["business_acceptance_declared"] is False
+    assert acceptance["business_accepted"] is False
     assert acceptance["declared_checks_passed"] is True
 
 

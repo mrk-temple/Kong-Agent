@@ -14,7 +14,7 @@ def test_read_between_failed_patches_preserves_actionable_warning(tmp_path):
     read = Act(actions=[Action(name="read_file", arguments={"path": "value.py"})])
     model = ScriptedModel([patch, read, patch, read, FinalResponse(content="read current file", evidence_ids=["a4"])])
     workspace = Workspace(tmp_path)
-    runtime = Runtime.new("inspect value", model, workspace, default_registry(workspace))
+    runtime = Runtime.new("inspect value", model, workspace, default_registry(workspace), completion_scope="mechanical")
     assert asyncio.run(runtime.run()).status == Status.COMPLETED
     warning = next(item.content for item in model.contexts[-1].items if "PATCH FAILURE STATUS:" in item.content)
     assert '"same_selector_failures":2' in warning and "a4" in warning

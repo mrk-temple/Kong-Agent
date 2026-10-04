@@ -151,7 +151,8 @@ def test_crash_after_side_effect_requires_inspection_not_replay(tmp_path):
     registry = default_registry(workspace)
     registry.register(SlowWrite())
     store = RunStore(tmp_path / ".kong" / "runs")
-    runtime = Runtime.new("goal", ScriptedModel([Act(actions=[Action(name="slow_write")])]), workspace, registry, store=store)
+    runtime = Runtime.new("goal", ScriptedModel([Act(actions=[Action(name="slow_write")])]), workspace, registry, store=store,
+                          completion_scope="mechanical")
     async def scenario():
         task = asyncio.create_task(runtime.run())
         await started.wait()

@@ -100,6 +100,9 @@ def test_valid_json_fragment_does_not_start_write_until_stream_finish(tmp_path):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             workspace = Workspace(tmp_path)
             runtime = Runtime.new("write", CompatibleModel(config(), client), workspace, default_registry(workspace))
+            from kong.contracts import Criterion
+            runtime.state.success_criteria = [Criterion(id="out", description="written value", kind="file_equals",
+                                                       path="result.txt", expected_text="ok")]
             task = asyncio.create_task(runtime.run())
             await partial.wait()
             assert not (tmp_path / "result.txt").exists() and not runtime.pending_action_id

@@ -139,7 +139,8 @@ def test_http_model_runtime_roundtrip(tmp_path):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             workspace = Workspace(tmp_path)
-            runtime = Runtime.new("读取 info.txt", CompatibleModel(config(), client), workspace, default_registry(workspace))
+            runtime = Runtime.new("读取 info.txt", CompatibleModel(config(), client), workspace, default_registry(workspace),
+                                  completion_scope="mechanical")
             assert (await runtime.run()).status == Status.COMPLETED
     asyncio.run(scenario())
     assert len(requests) == 2

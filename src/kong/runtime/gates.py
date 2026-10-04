@@ -5,7 +5,7 @@ from kong.contracts import FinalResponse, History, RunState
 from kong.workspace import Workspace
 from kong.runtime.evidence import fresh, register_semantic_read, verified_pass
 from kong.runtime.metrics import attributed
-from kong.runtime.progress import ProgressGate  # Public compatibility import.
+from kong.runtime.progress import ProgressGate as ProgressGate  # Public compatibility import.
 
 
 def subset(actual, expected):

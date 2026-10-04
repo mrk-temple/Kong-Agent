@@ -7,6 +7,7 @@ from kong.evaluation.specs import CASES
 from kong.evaluation.variation_verifiers import verify_variation
 from kong.evaluation.variations import CONTRACTS, VARIATION_CASES
 from kong.storage import RunStore
+from test_evaluation_profiles import mechanical_fixture_suite
 
 
 def test_legacy_contracts_remain_frozen_and_variations_are_separate():
@@ -43,7 +44,7 @@ def test_harness_exception_diagnostic_omits_paths_and_error_text():
 
 
 def test_revision_task_retains_trials_and_old_correction_fails(tmp_path):
-    root, summary = asyncio.run(runner.run_suite(tmp_path, task_set="variation16", case_ids=["v04_revision_status"], repetitions=2))
+    root, summary = asyncio.run(mechanical_fixture_suite(tmp_path, task_set="variation16", case_ids=["v04_revision_status"], repetitions=2))
     assert summary["runs"] == 2 and summary["counts"]["success"] == 2
     assert summary["task_set"] == "variation16" and summary["model_score"] is None
     assert summary["human_intervention"]["corrections"] is None
@@ -63,7 +64,7 @@ def test_revision_task_retains_trials_and_old_correction_fails(tmp_path):
 
 
 def test_v2_accepts_only_protected_successful_check_as_equivalent_readback(tmp_path):
-    root, summary = asyncio.run(runner.run_suite(tmp_path, task_set="variation16_v2",
+    root, summary = asyncio.run(mechanical_fixture_suite(tmp_path, task_set="variation16_v2",
         case_ids=["v04_data_inventory"], repetitions=1))
     assert summary["counts"]["success"] == 1
     path = root / "cases/v04_data_inventory/trial-01/result.json"
@@ -89,7 +90,7 @@ def test_v2_accepts_only_protected_successful_check_as_equivalent_readback(tmp_p
 
 
 def test_plan_variations_have_no_environment_actions(tmp_path):
-    root, summary = asyncio.run(runner.run_suite(tmp_path, task_set="plan3", repetitions=1))
+    root, summary = asyncio.run(mechanical_fixture_suite(tmp_path, task_set="plan3", repetitions=1))
     assert summary["runs"] == summary["counts"]["expected_approval"] == 3
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     assert len(manifest["runtime_criteria"]) == 3
@@ -102,7 +103,7 @@ def test_variation_export_retains_artifacts_and_resource_fingerprint(tmp_path):
     spec = importlib.util.spec_from_file_location("eval_export", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    root, summary = asyncio.run(runner.run_suite(tmp_path / "runs", task_set="variation16_v2",
+    root, summary = asyncio.run(mechanical_fixture_suite(tmp_path / "runs", task_set="variation16_v2",
         case_ids=["v04_repair_mean"], repetitions=1))
     output = tmp_path / "public.json"
     assert module.export(root, output) == 1

@@ -43,7 +43,7 @@ def test_local_execution_from_cli_and_http_protocol(tmp_path):
         config = tmp_path / "model.toml"
         config.write_text(f'default_profile="local"\n[profiles.local]\nbase_url="http://127.0.0.1:{server.server_port}/v1"\nmodel="test"\napi_key_env="KONG_TEST_UNUSED"', encoding="utf-8")
         result = cli(tmp_path, "--config", str(config), "--global-memory-db", str(tmp_path / "global.db"),
-                     "--allow-process", "run", "create and verify result", "--no-interactive")
+                     "--allow-process", "run", "create and verify result", "--completion-scope", "mechanical", "--no-interactive")
         assert result.returncode == 0, result.stdout + result.stderr
         assert (tmp_path / "result.txt").read_text() == "verified"
         assert len(requests) == 3

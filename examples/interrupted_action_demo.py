@@ -41,8 +41,8 @@ async def demo(workspace_root: Path) -> dict:
     ])
     runtime = Runtime.new("interrupted action demo", model, workspace, registry, store=store)
     runtime.state.success_criteria = [Criterion(
-        id="c1", description="output.txt contains the resolved marker",
-        kind="file_contains", path="output.txt", contains="RESOLVED AND WRITTEN")]
+        id="c1", description="output.txt equals the resolved marker",
+        kind="file_equals", path="output.txt", expected_text="RESOLVED AND WRITTEN\n")]
 
     # Inject an action whose outcome is unknown: intent saved, execution never observed.
     runtime.history.append("action_intent", 0, action_id="a1",

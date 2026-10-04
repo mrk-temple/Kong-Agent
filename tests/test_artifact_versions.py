@@ -16,7 +16,7 @@ def runtime_for(tmp_path):
     workspace = Workspace(tmp_path)
     runtime = Runtime.new("verify", ScriptedModel([]), workspace,
         default_registry(workspace, allow_process=True, allow_terminal=os.name == "nt"),
-        store=RunStore(tmp_path / ".kong/runs"))
+        store=RunStore(tmp_path / ".kong/runs"), completion_scope="mechanical")
     runtime.state.success_criteria = [Criterion(id="check", description="check artifact", kind="tool_success",
         tool_name="process_exec", after_last_write=True, artifact_paths=["artifact.txt"])]
     return runtime
@@ -183,7 +183,7 @@ def test_external_write_receipt_is_not_current_state_even_with_local_hash(tmp_pa
     assert gate.check(RunState(goal="remote", success_criteria=[criterion]), decision, history)
     criterion.artifact_paths = []
     criterion.evidence_scope = "event"
-    assert not gate.check(RunState(goal="historical receipt", success_criteria=[criterion]), decision, history)
+    assert not gate.check(RunState(goal="historical receipt", success_criteria=[criterion], completion_scope="mechanical"), decision, history)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Native terminal requires Windows")
