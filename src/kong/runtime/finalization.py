@@ -92,6 +92,10 @@ def completion_guidance(gate, state, history):
     probe = FinalResponse(content="verification status only")
     problems = gate.check(state, probe, history)
     feedback = rejection_feedback(gate, state, probe, history, problems)
+    if "authority:acceptance_conditions" in feedback["unsatisfied"]:
+        feedback["instruction"] = ("Ask the caller for the missing acceptance conditions. Do not submit completion, "
+            "invent conditions, or run another tool to gain authority. Follow runtime phase/approval first.")
+        return feedback
     feedback["instruction"] = ("This is current read-only verification status, not a completion decision. "
         "Follow runtime phase/approval first. When no further tool is required, submit a corrected respond using actual IDs. "
         "Do not repeat already verified work. No action or evidence is selected on your behalf.")
@@ -180,13 +184,19 @@ def rejection_feedback(gate, state, decision, history, problems):
     uncertain_checks = any(result["kind"] in {"command", "tool_success", "tool_result", "protected", "binding"} for result in failed)
     additional_tool = bool(failed) or (state.requires_evidence and not successful) or bool(history.observations and not history.observations[-1].success)
     mutation = True if output_failed else None if uncertain_checks else False
-    if additional_tool:
+    acceptance_required = any(p.startswith("Acceptance conditions required:") for p in problems)
+    if acceptance_required:
+        additional_tool, mutation = False, False
+        next_action = "Ask the caller for missing acceptance conditions. Do not submit completion, invent conditions, or repeat tools."
+    elif additional_tool:
         next_action = "Follow the failed requirement issues and remaining_steps. Run required commands before final readback; use the declared fresh_python flag. Do not repeat verified work or mutate protected sources."
     elif state.plan and not all(step.done for step in state.plan.steps):
         next_action = "Complete the active approved step using existing evidence, then return a corrected respond."
     else:
         next_action = "Return a corrected respond with actual evidence_ids and criteria_evidence from the available observations. Do not run another tool unless task state changes."
     unsatisfied = [result["id"] for result in results if not result["verified"]]
+    if acceptance_required:
+        unsatisfied.append("authority:acceptance_conditions")
     if any(problem.startswith("Tool tasks require") for problem in problems):
         unsatisfied.append("submission:evidence_ids")
     if any(problem.startswith("Contract final evidence") for problem in problems):
@@ -195,7 +205,7 @@ def rejection_feedback(gate, state, decision, history, problems):
             "unsatisfied": unsatisfied[:100], "reasons": problems[:12],
             "requirement_issues": [{"id": r["id"], "issues": r.get("issues", [])} for r in failed][:30],
             "remaining_steps": remaining_steps(state, results, failed, output_failed,
-                acceptance_required=any(p.startswith("Acceptance conditions required:") for p in problems),
+                acceptance_required=acceptance_required,
                 last_failed=bool(history.observations and not history.observations[-1].success)),
             "current_valid_observations": sorted(valid)[-12:],
             "historical_event_observations": sorted(historical)[-12:],
