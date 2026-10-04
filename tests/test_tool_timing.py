@@ -1,4 +1,5 @@
 import asyncio
+from time import perf_counter
 
 from kong.contracts import Act, Action, NeedUserInput, Status
 from kong.models.fake import ScriptedModel
@@ -12,10 +13,14 @@ from kong.workspace import Workspace
 
 
 def test_parallel_timings_correlate_results_and_separate_sum_from_wall(tmp_path):
+    observed = {}
     class SlowRead(ReadFileTool):
         async def run(self, **kwargs):
+            started = perf_counter()
             await asyncio.sleep(0.06)
-            return await super().run(**kwargs)
+            result = await super().run(**kwargs)
+            observed[kwargs['path']] = perf_counter() - started
+            return result
     for name in ['one.txt','two.txt']:
         (tmp_path / name).write_text(name)
     workspace = Workspace(tmp_path)
@@ -27,7 +32,10 @@ def test_parallel_timings_correlate_results_and_separate_sum_from_wall(tmp_path)
     assert asyncio.run(runtime.run()).status == Status.WAITING_USER
     m = runtime.metrics
     assert m.tool_calls == 2 and [t.action_id for t in m.tool_timings] == ['a1','a2']
-    assert all(t.success and t.elapsed_seconds >= 0.06 for t in m.tool_timings)
+    # Loop timers can use a coarser clock than perf_counter. Compare with actual
+    # independently observed work, rather than the requested sleep interval.
+    assert all(t.success and t.elapsed_seconds >= observed[path] > 0
+               for t, path in zip(m.tool_timings, ['one.txt', 'two.txt']))
     assert m.tool_seconds == sum(t.elapsed_seconds for t in m.tool_timings)
     assert m.tool_seconds > m.tool_wall_seconds
     report = run_report(runtime)['metrics']
