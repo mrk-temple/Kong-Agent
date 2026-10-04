@@ -181,7 +181,7 @@ class SkillCatalog:
         brief = {"skills": [{"id": s["id"], "description": s["description"][:110], "status": s["status"]}
                             for s in listing["skills"]], "total": listing["total"], "next_offset": listing["next_offset"]}
         result = [item("skill_catalog", "SKILL CATALOG (metadata only; load instructions before use):\n" +
-                       json.dumps(brief, ensure_ascii=False), 1, [ContextSource(kind="tools", path="skill_catalog")])]
+                       json.dumps(brief, ensure_ascii=False, separators=(",", ":")), 1, [ContextSource(kind="tools", path="skill_catalog")])]
         # Immutable content from successful loads in this Run, never from another Run's memory.
         active = {}
         for index, event in enumerate(history.events):

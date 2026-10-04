@@ -32,7 +32,9 @@ def test_failure_during_content_write_remains_unknown(tmp_path,monkeypatch):
     def failing(path,*args,**kwargs):
         stream=original(path,*args,**kwargs)
         if path.name=='new.txt' and args and args[0]=='x':
-            bad=BadStream(); bad.inner=stream; return bad
+            bad=BadStream()
+            bad.inner=stream
+            return bad
         return stream
     monkeypatch.setattr(Path,'open',failing)
     ws=Workspace(tmp_path)
@@ -52,7 +54,8 @@ def test_parent_creation_race_remains_unknown(tmp_path,monkeypatch):
         if path.name=='created.txt' and args and args[0]=='x':
             calls+=1
             if calls==2:
-                with original(path,'w',encoding='utf-8') as stream: stream.write('external')
+                with original(path,'w',encoding='utf-8') as stream:
+                    stream.write('external')
         return original(path,*args,**kwargs)
     monkeypatch.setattr(Path,'open',racing)
     ws=Workspace(tmp_path)

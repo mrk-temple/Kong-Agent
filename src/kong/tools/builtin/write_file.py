@@ -17,7 +17,8 @@ class WriteFileArgs(BaseModel):
 
 class WriteFileTool(Tool):
     name = "write_file"
-    description = "Create UTF-8 text in the workspace. Existing files require overwrite=true. Atomic replacement."
+    description = ("Create NEW UTF-8 text. Edit existing files with patch_file; authorized full replacement needs "
+                   "overwrite=true (atomic). Failed creation does not authorize replacement.")
     args_model = WriteFileArgs
 
     def __init__(self, workspace: Workspace):

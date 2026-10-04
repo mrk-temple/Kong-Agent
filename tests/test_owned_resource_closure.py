@@ -67,14 +67,16 @@ def cleanup_row(rt):
 @pytest.mark.parametrize('case', ['missing','wrong','partial','reopened','unknown'])
 def test_cleanup_requires_every_actual_opened_resource(tmp_path, case):
     rt = owned_run(tmp_path)
-    if case == 'wrong': act(rt, 'terminal', operation='close', session='unrelated')
+    if case == 'wrong':
+        act(rt, 'terminal', operation='close', session='unrelated')
     if case == 'partial':
         act(rt, 'terminal', operation='start')
         act(rt, 'terminal', operation='close', session='terminal2')
     if case == 'reopened':
         act(rt, 'terminal', operation='close', session='terminal1')
         act(rt, 'terminal', operation='start')
-    if case == 'unknown': act(rt, 'terminal', operation='close', session='terminal1', unknown=True)
+    if case == 'unknown':
+        act(rt, 'terminal', operation='close', session='terminal1', unknown=True)
     assert not cleanup_row(rt)['verified']
     assert len(rt.registry.get('terminal').resources) >= 1
 
@@ -123,7 +125,8 @@ def test_old_v1_binding_identity_is_unchanged_and_new_fields_need_v2(tmp_path):
     old = CompletionContract.model_validate({'family':'data','artifacts':[{'id':'a','path':'a','format':'text','expected_text':'x'}]})
     dumped = old.model_dump(mode='json')
     dumped.pop('resource_closures')
-    for a in dumped['artifacts']: a.pop('binary_prefix_hex')
+    for a in dumped['artifacts']:
+        a.pop('binary_prefix_hex')
     assert old.identity_dump() == dumped
     ws=Workspace(tmp_path)
     rt=Runtime.new('old contract',ScriptedModel([]),ws,default_registry(ws),completion_contract=old)

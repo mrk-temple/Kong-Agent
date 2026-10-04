@@ -324,7 +324,7 @@ class ContextEngine:
                         "current_focus": working.current_focus, "progress_summary": working.progress_summary,
                         "important_observation_ids": working.important_observation_ids,
                         "recent_failures": working.recent_failures}
-        items.append(item("working_set", "WORKING SET:\n" + json.dumps(working_data, ensure_ascii=False), 1, [src("state")]))
+        items.append(item("working_set", "WORKING SET:\n" + json.dumps(working_data, ensure_ascii=False, separators=(",", ":")), 1, [src("state")]))
         # Keep recent dialog raw; priority ordering favors the newest complete
         # message. Renderer places it in a clearly marked historical section.
         for message in reversed(recent):
@@ -373,7 +373,7 @@ class ContextEngine:
             manifest = {"thread_id": thread.thread_id, "base_revision": thread_state.revision,
                         "existing_items": [{"id": i.id, "key": i.key, "kind": i.kind, "status": i.status} for i in thread_state.items[-self.policy.thread_item_limit:]],
                         "note": "Only source events present in this packet may be cited; no summary rewrites."}
-            items.append(item("memory_manifest", "MEMORY DELTA TARGET:\n" + json.dumps(manifest, ensure_ascii=False), 1, [src("thread_state")]))
+            items.append(item("memory_manifest", "MEMORY DELTA TARGET:\n" + json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), 1, [src("thread_state")]))
         items.extend(self.supplemental_items)
         selected, messages, used, categories, dropped = self.budget_manager.allocate(items, self.budget)
         selected = [entry.model_copy(deep=True) for entry in selected]

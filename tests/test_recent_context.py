@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 from kong.continuity.contracts import RecentContextPolicy
 from kong.continuity.history import HistorySelector
@@ -22,7 +23,11 @@ def execute(runtime):
     return runtime
 
 
-def test_immediate_recall_uses_actual_raw_context(tmp_path):
+@pytest.mark.parametrize("workspace_suffix", ["", "long-workspace-" + "x" * 60])
+def test_immediate_recall_uses_actual_raw_context(tmp_path, workspace_suffix):
+    if workspace_suffix:
+        tmp_path = tmp_path / workspace_suffix
+        tmp_path.mkdir()
     first = execute(new(tmp_path, "你好我是c"))
     class ContextReadingModel:
         async def generate(self, packet):
