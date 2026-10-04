@@ -26,11 +26,22 @@ class WriteFileTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         path = self.workspace.resolve(kwargs["path"])
         content = kwargs["content"]
-        path.parent.mkdir(parents=True, exist_ok=True)
         if not kwargs.get("overwrite", False):
-            with path.open("x", encoding="utf-8", newline="") as stream:
+            try:
+                stream = path.open("x", encoding="utf-8", newline="")
+            except FileExistsError:
+                return ToolResult(success=False, outcome_unknown=False,
+                    error="write_file.precondition_exists: Existing path; exclusive creation did not start. "
+                          "Read the current file and use patch_file, or explicitly authorized overwrite=true. No automatic replacement.")
+            except FileNotFoundError:
+                # Once directory creation is attempted, subsequent errors remain
+                # conservative unknown effects in the executor.
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stream = path.open("x", encoding="utf-8", newline="")
+            with stream:
                 stream.write(content)
         else:
+            path.parent.mkdir(parents=True, exist_ok=True)
             descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=".kong-write-")
             try:
                 with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
