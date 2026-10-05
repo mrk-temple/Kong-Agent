@@ -1,4 +1,4 @@
-# ARCHITECTURE — Kong-Agent 0.4.0rc3
+# ARCHITECTURE — Kong-Agent 0.4.0rc5
 
 本文描述当前代码结构与控制闭环，节点均对照 `src/kong/` 实际实现；能力限制与验证方式见 [README](README.md) 与 [PUBLIC_RELEASE_CHECKLIST](PUBLIC_RELEASE_CHECKLIST.md)。行号会随修改漂移，引用以模块与符号名为准。
 
