@@ -86,7 +86,7 @@ class CsvAggregate(Declaration):
 
 class ResourceClosureRequirement(Declaration):
     id: str = Field(min_length=1, max_length=200)
-    tool: Literal["terminal", "browser"]
+    tool: Literal["terminal", "browser", "mcp"]
 
 
 class CompletionContract(Declaration):

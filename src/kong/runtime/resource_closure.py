@@ -3,19 +3,24 @@
 
 def closure_result(requirement, history):
     tool = requirement.tool
-    key, operation = ("session", "start") if tool == "terminal" else ("page", "open")
+    key, opens = {"terminal": ("session", {"start"}), "browser": ("page", {"open"}),
+                  "mcp": ("server", {"list", "call"})}[tool]
     opened, unknown, closed = {}, False, []
     for obs in history.observations:
-        if obs.action.name != tool:
+        if obs.action.name != tool or not obs.dispatched:
             continue
         op = obs.action.arguments.get("operation")
-        if op not in {operation, "close"}:
+        if op not in opens | {"close"}:
             continue
         if obs.outcome_unknown:
             unknown = True
             continue
-        if op == operation:
-            rid = obs.output.get(key) if isinstance(obs.output, dict) else None
+        if op in opens:
+            # MCP list/call lazily opens a connection named by the caller's
+            # configured server argument. Even a failed request may own it;
+            # server enumeration alone opens nothing. Never infer a close.
+            rid = (obs.action.arguments.get(key) if tool == "mcp" else
+                   obs.output.get(key) if isinstance(obs.output, dict) else None)
             if isinstance(rid, str) and rid:
                 opened[rid] = None  # Navigating/reopening cannot reuse an earlier close.
             elif obs.success:
