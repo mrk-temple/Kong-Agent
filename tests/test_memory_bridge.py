@@ -365,7 +365,10 @@ def test_runtime_three_modes_keep_controller_lease_and_permissions(tmp_path, mod
     db = tmp_path / "core.db"
     initialize(db)
     async def scenario():
-        async with MemoryBridge(db, owner()) as bridge:
+        # This case checks controller policy with a healthy Core, not cold disk
+        # timing. Timeout/fail-closed behavior has its own explicit deadline test.
+        async with MemoryBridge(db, owner(), timeout=5) as bridge:
+            assert await bridge.get_access_state() is not None
             decision = (PlanProposal(plan=Plan(goal="hello", rationale="review", steps=[PlanStep(id="s1", title="work")],
                         success_criteria=[Criterion(id="c1", description="artifact", kind="file_exists", path="artifact.txt")]))
                         if mode == Mode.PLAN else FinalResponse(content="plain answer"))
@@ -375,7 +378,7 @@ def test_runtime_three_modes_keep_controller_lease_and_permissions(tmp_path, mod
             await run.run()
             expected = (4, 4) if mode == Mode.FAST else (4, 40) if mode == Mode.AUTO else (6, 60)
             assert before == expected
-            assert run.state.status == (Status.WAITING_USER if mode == Mode.PLAN else Status.COMPLETED)
+            assert run.state.status == (Status.WAITING_USER if mode == Mode.PLAN else Status.COMPLETED), run.state.stop_reason
             if mode == Mode.PLAN:
                 assert run.state.pending_approval.revision == 1
                 assert run.state.plan.approved_revision is None

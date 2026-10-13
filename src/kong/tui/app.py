@@ -306,18 +306,36 @@ class KongApp(App):
         if (
             self.refreshing
             or not self.thread_id
-            or isinstance(self.screen, ModalScreen)
+            or not self.is_running
+            or not self.screen_stack
         ):
             return
+        screen = self.screen
+        if isinstance(screen, ModalScreen) or not screen.is_attached:
+            return
+        thread_id = self.thread_id
+
+        def active_view():
+            return (
+                self.is_running
+                and screen.is_attached
+                and self.screen is screen
+                and self.thread_id == thread_id
+            )
+
         self.refreshing = True
         try:
             threads = await self.client.list_threads()
-            select = self.query_one("#thread", Select)
+            if not active_view():
+                return
+            select = screen.query_one("#thread", Select)
             select.set_options(
                 [(t["title"][:20], t["thread_id"]) for t in threads["items"]]
             )
             select.value = self.thread_id
-            thread = await self.client.thread_detail(self.thread_id)
+            thread = await self.client.thread_detail(thread_id)
+            if not active_view():
+                return
             self.detail = thread["runs"][-1] if thread["runs"] else None
             self.current = self.detail["run_id"] if self.detail else None
             content = "\n\n".join(
@@ -325,7 +343,7 @@ class KongApp(App):
                 for m in thread["accepted_messages"]
             )
             if content != self.last_conversation:
-                log = self.query_one("#conversation", RichLog)
+                log = screen.query_one("#conversation", RichLog)
                 log.clear()
                 log.write(content or "从一件小事开始。F4 发送，F8 配置模型。")
                 self.last_conversation = content
@@ -343,9 +361,11 @@ class KongApp(App):
                     status += " · " + self.detail["pending_question"]
                 if self.detail["unknown_actions"]:
                     status += " · 动作未知，先检查工作区，在输入中说明实际结果，F7 确认"
-                self.query_one("#status", Static).update(status)
+                screen.query_one("#status", Static).update(status)
                 trace = await self.client.context_trace(self.current)
-                inspector = self.query_one("#inspector", RichLog)
+                if not active_view():
+                    return
+                inspector = screen.query_one("#inspector", RichLog)
                 inspector.clear()
                 inspector.write(
                     "真实工具事件\n"
@@ -358,13 +378,14 @@ class KongApp(App):
                     + json.dumps(trace["items"][-6:], ensure_ascii=False, indent=2)
                 )
             else:
-                self.query_one("#status", Static).update(
+                screen.query_one("#status", Static).update(
                     "准备就绪 · F4 发送 · Ctrl I 管理记忆"
                 )
         except Exception:
-            self.query_one("#status", Static).update(
-                "读取失败，连接可能中断；任务不会重新提交。"
-            )
+            if active_view():
+                screen.query_one("#status", Static).update(
+                    "读取失败，连接可能中断；任务不会重新提交。"
+                )
         finally:
             self.refreshing = False
 

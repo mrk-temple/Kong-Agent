@@ -40,3 +40,36 @@ def test_tui_pilot_real_service_and_memory(tmp_path, width):
                 await pilot.pause()
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("read_fails", [False, True])
+def test_tui_refresh_result_after_shutdown_does_not_touch_removed_widgets(
+    tmp_path, monkeypatch, read_fails
+):
+    async def check():
+        async with LocalClient(
+            tmp_path, model_factory=lambda: ScriptedModel([])
+        ) as client:
+            started = asyncio.Event()
+            release = asyncio.Event()
+            app = KongApp(client)
+            async with app.run_test(size=(100, 24)) as pilot:
+                await pilot.pause()
+                threads = await client.list_threads()
+
+                async def delayed_threads():
+                    started.set()
+                    await release.wait()
+                    if read_fails:
+                        raise RuntimeError("fixture read failed after shutdown")
+                    return threads
+
+                monkeypatch.setattr(client, "list_threads", delayed_threads)
+                refresh = asyncio.create_task(app.refresh_state())
+                await asyncio.wait_for(started.wait(), timeout=2)
+            # Complete the outstanding read only after Textual has unmounted.
+            release.set()
+            await asyncio.wait_for(refresh, timeout=2)
+            assert not app.refreshing
+
+    asyncio.run(check())
