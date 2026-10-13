@@ -8,10 +8,11 @@ import tempfile
 import time
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from kong.contracts import Contract, History, RunState, RunMetrics
 from kong.runtime.interaction import RunInput, RunEvent
+from kong.continuity.memory_contracts import ContinuityPolicy
 
 
 def atomic_replace(source, target) -> None:
@@ -46,6 +47,16 @@ class Snapshot(Contract):
     thread_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     project_id: str | None = None
     metrics: RunMetrics | None = None
+    continuity_policy: ContinuityPolicy | None = None
+    memory_binding: dict | None = None
+
+    @model_validator(mode="after")
+    def policy_version(self):
+        if (self.schema_version == 5 and self.continuity_policy is None) or (self.schema_version < 5 and self.continuity_policy is not None):
+            raise ValueError("Non-default continuity policy requires snapshot schema 5")
+        if (self.schema_version == 6) != (self.memory_binding is not None):
+            raise ValueError("Memory Core binding requires snapshot schema 6")
+        return self
 
 
 class RunStore:
@@ -62,7 +73,8 @@ class RunStore:
         target = self.path(snapshot.state.run_id)
         descriptor, temp_name = tempfile.mkstemp(dir=self.directory, suffix=".tmp")
         try:
-            payload = snapshot.model_dump_json(indent=2)
+            excluded = {key for key in ("continuity_policy", "memory_binding") if getattr(snapshot, key) is None}
+            payload = snapshot.model_dump_json(indent=2, exclude=excluded)
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
                 stream.write(payload)
                 stream.flush()
@@ -75,7 +87,7 @@ class RunStore:
 
     def load(self, run_id: str) -> Snapshot:
         snapshot = Snapshot.model_validate_json(self.path(run_id).read_text(encoding="utf-8"))
-        if snapshot.schema_version not in {1, 2, 3, 4} or snapshot.state.run_id != run_id:
+        if snapshot.schema_version not in {1, 2, 3, 4, 5, 6} or snapshot.state.run_id != run_id:
             raise ValueError("Unsupported snapshot version or mismatched run ID")
         return snapshot
 

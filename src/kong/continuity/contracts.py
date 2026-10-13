@@ -43,7 +43,7 @@ class ContextSource(Contract):
     State/system sources are explicit: V0.1 does not emit a goal-created event.
     These are not memory records and must not pretend to have event provenance.
     """
-    kind: Literal["system", "state", "tools", "event", "observation", "custom"]
+    kind: Literal["system", "state", "tools", "event", "observation", "custom", "memory"]
     thread_id: str | None = None
     event_id: str | None = None
     run_id: str | None = None
@@ -64,6 +64,8 @@ class ContextItem(Contract):
     priority: int = Field(ge=0, le=5)
     content: str
     sources: list[ContextSource] = Field(min_length=1)
+    memory_kind: Literal["semantic", "episodic"] | None = None
+    pinned: bool = False
 
 
 class WorkingSet(Contract):
@@ -104,6 +106,10 @@ class ContextPacket(Contract):
     recalled_memories: list[dict] = Field(default_factory=list)
     episodes: list[dict] = Field(default_factory=list)
     observations: list[dict] = Field(default_factory=list)
+    memory_access: dict | None = None
+    memory_degraded: bool = False
+    memory_query: dict | None = None
+    memory_query_status: Literal["available", "no_usable_information", "ambiguous", "unavailable"] | None = None
 
     @property
     def over_budget(self) -> bool:

@@ -57,7 +57,7 @@ class ContextEngine:
     """
     def __init__(self, builder: ContextBuilder | None = None, budget: ContextBudget | None = None, *,
                  policy: ContinuityPolicy | None = None, ranking: RankingConfig | None = None,
-                 retriever: MemoryRetriever | None = None):
+                 retriever: MemoryRetriever | None = None, memory_bridge=None):
         self.legacy = builder is not None
         self.builder = builder or ContextBuilder()
         self.budget = budget or ContextBudget()
@@ -71,6 +71,8 @@ class ContextEngine:
         self.thread = None
         self.project_id = None
         self.policy = policy or ContinuityPolicy()
+        if self.legacy and self.policy.memory_mode != "M1":
+            raise ValueError("Experimental memory modes require the standard ContextEngine compiler")
         self.ranking = ranking or RankingConfig()
         self.retriever = retriever
         self.extractor = ExplicitExtractor()
@@ -79,6 +81,35 @@ class ContextEngine:
         self.budget_manager = BudgetManager(self.renderer)
         self.diagnostics = []
         self.supplemental_items = []
+        self.memory_bridge = memory_bridge
+        self.memory_binding = None
+        self.source_guard = None
+        self.last_memory_query = None
+        self.last_memory_context = None
+        self.expected_store_id = None
+        self.allow_initial_binding = False
+        if memory_bridge is not None:
+            self.attach_memory(memory_bridge)
+
+    def attach_memory(self, bridge):
+        if self.legacy or self.policy.memory_mode != "M1" or self.retriever is not None:
+            raise ValueError("Memory Core requires the standard compiler without legacy Memory modes/retriever")
+        from kong.continuity.source_guard import SourceAccessGuard
+        self.memory_bridge = bridge
+        self.memory_binding = {**bridge.principal, "access": None}
+        self.allow_initial_binding = True
+        self.source_guard = SourceAccessGuard(bridge.principal)
+
+    async def validate_packet(self, packet):
+        if self.memory_bridge is None:
+            return True
+        access = await self.memory_bridge.get_access_state()
+        if access is not None and self.expected_store_id not in (None, access.store_id):
+            access = None
+        valid = packet.memory_access == (access.model_dump(mode="json") if access else None)
+        if not valid:
+            self.last_packet = None
+        return valid
 
     def audit(self, run_id, kind, **data):
         self.diagnostics.append({"run_id": run_id, "kind": kind, **data})
@@ -91,6 +122,13 @@ class ContextEngine:
     def bind(self, thread, runs, *, long_term_store=None, project_id=None, thread_store=None, run_id=None):
         self.thread, self.runs = thread, runs
         self.project_id = project_id
+        if self.memory_bridge is not None:
+            if long_term_store is not None:
+                raise ValueError("Core and legacy Memory stores cannot be enabled together")
+            if runs:
+                self.history_selector = HistorySelector(runs, thread_store, RecentContextPolicy(
+                    max_messages=self.policy.recent_messages, max_chars=self.policy.recent_chars), source_guard=self.source_guard)
+            return  # No legacy store initialization, packet reuse, derive or double writes.
         if runs:
             self.store = MemoryStore(thread_store.path if thread_store else runs.directory.parent / "context.db")
             self.long_term_store = long_term_store or self.store
@@ -106,7 +144,13 @@ class ContextEngine:
         self.thread = thread
         if not self.legacy:
             try:
-                return await self._compile(thread, state, history, tools)
+                packet = await self._compile(thread, state, history, tools)
+                if not await self.validate_packet(packet):
+                    packet = await self._compile(thread, state, history, tools)
+                    if not await self.validate_packet(packet):
+                        from kong.models.base import ModelError
+                        raise ModelError("Memory access changed repeatedly during assembly; no context released")
+                return packet
             except sqlite3.Error as exc:
                 self.audit(state.run_id, "context_storage_unavailable", error=type(exc).__name__)
                 store, selector = self.store, self.history_selector
@@ -114,6 +158,9 @@ class ContextEngine:
                 try:
                     packet = await self._compile(thread, state, history, tools)
                     packet.selection_notes.append("Derived database unavailable; compiled current Run only.")
+                    if not await self.validate_packet(packet):
+                        from kong.models.base import ModelError
+                        raise ModelError("Memory access changed during degraded context assembly; no context released")
                     self.last_packet = packet.model_copy(deep=True)
                     return packet
                 finally:
@@ -174,7 +221,13 @@ class ContextEngine:
 
     async def commit(self, *, state: RunState, history: History) -> WorkingSet:
         self.working_set = self.working_set_builder.build(state, history)
-        if self.store and self.thread:
+        if self.memory_bridge is not None and self.runs is not None and self.memory_bridge.can_observe:
+            try:
+                if not await self.memory_bridge.observe_snapshot(self.runs.load(state.run_id)):
+                    self.audit(state.run_id, "memory_observation_pending")
+            except (OSError, ValueError):
+                self.audit(state.run_id, "memory_observation_pending")
+        if self.memory_bridge is None and self.store and self.thread and self.policy.memory_mode != "M0":
             try:
                 start = self.store.cursor(state.run_id)
                 proposals = [(index, e.payload["memory_delta_proposal"]) for index, e in enumerate(history.events[start:], start)
@@ -204,6 +257,10 @@ class ContextEngine:
         proposals and must pass source validation again. Existing long-term
         rejection/supersession tombstones are intentionally retained.
         """
+        if self.memory_bridge is not None:
+            raise ValueError("Legacy Memory rebuild is disabled while Memory Core is active")
+        if self.policy.memory_mode == "M0":
+            raise ValueError("Derived memory is disabled for this Run")
         if not self.store or not self.thread:
             raise ValueError("Rebuild requires persistent Thread storage")
         snapshots = [self.runs.load(run_id) for run_id in self.store.runs(self.thread.thread_id)]
@@ -284,11 +341,56 @@ class ContextEngine:
         self.store.set_cursor(state.run_id, len(history.events))
 
     async def _compile(self, thread, state, history, tools):
+        core_context = None
+        packet_access = None
+        extra_items = self.supplemental_items
+        original_state = state
+        if self.memory_bridge is not None:
+            fresh_unbound_input = self.allow_initial_binding and self.memory_binding["access"] is None and len(history.events) <= 1
+            ledger = await self.memory_bridge.get_access_state()
+            ledger_access = (ledger.model_dump(mode="json") if ledger is not None
+                             and self.expected_store_id in (None, ledger.store_id) else None)
+            self.source_guard.access = ledger_access
+            trusted_current = fresh_unbound_input or self.source_guard.allows_binding(self.memory_binding)
+            focus_recent = self.history_selector.select(thread, state.run_id)[0] if self.history_selector else []
+            query_state = state if trusted_current else RunState(run_id=state.run_id, goal="Ask for fresh input.")
+            self.last_memory_query = self.planner.memory_query(query_state, history if trusted_current else History(),
+                focus_recent, project_id=self.project_id if trusted_current else None)
+            core_context = await self.memory_bridge.retrieve_context(self.last_memory_query)
+            if core_context is not None and self.expected_store_id not in (None, core_context.access.store_id):
+                core_context = None  # Wrong DB with colliding Profile IDs: never personalize from it.
+            if core_context is not None and core_context.access.model_dump(mode="json") != ledger_access:
+                core_context = None  # Clues validated before a revocation cannot influence a new view.
+            access = core_context.access.model_dump(mode="json") if core_context else None
+            packet_access = access
+            if core_context is None:
+                # A damaged content row may fail retrieval while its authorization
+                # ledger is readable. Stamp the empty degraded packet, without
+                # authorizing historical material or treating it as a retrieval.
+                ledger = await self.memory_bridge.get_access_state()
+                if ledger is not None and self.expected_store_id in (None, ledger.store_id):
+                    packet_access = ledger.model_dump(mode="json")
+            self.source_guard.access = access
+            if access is not None and self.memory_binding["access"] is None and self.allow_initial_binding:
+                self.memory_binding["access"] = access
+            self.allow_initial_binding = False  # Never re-authorize a prior unbound read/session later.
+            if not self.source_guard.allows_binding(self.memory_binding) and not fresh_unbound_input:
+                # Only a model projection is withheld; actual task state,
+                # evidence, approvals, handles and recovery remain untouched.
+                state = RunState(run_id=state.run_id, goal="Prior task text is withheld after Memory access changed. Ask for fresh user input.",
+                                 mode=state.mode, strategy=state.strategy, phase=state.phase, status=state.status,
+                                 turn_count=state.turn_count, turn_budget=state.turn_budget, hard_turn_limit=state.hard_turn_limit,
+                                 requires_evidence=state.requires_evidence)
+                history = History()
+                extra_items = []
+            self.last_memory_context = core_context
+            if core_context is None:
+                self.last_memory_query = None
         working = self.working_set_builder.build(state, history)
         recent, notes = self.history_selector.select(thread, state.run_id) if self.history_selector else ([], [])
         # Legacy Runs are incorporated lazily. Read facts only from RunStore;
         # never create a second full Thread history in SQLite.
-        if self.store:
+        if self.store and self.policy.memory_mode != "M0":
             membership = self.store.runs(thread.thread_id)
             for run_id in membership[:membership.index(state.run_id)]:
                 try:
@@ -306,7 +408,7 @@ class ContextEngine:
         goal_source = next((source_for(thread.thread_id, state.run_id, i) for i, e in enumerate(history.events)
                             if e.type == "human" and e.payload.get("command") == "goal"), src("goal"))
         control = state.model_dump(mode="json", exclude={"goal", "progress_state", "final_output"})
-        items = [item("system", memory_protocol(state, history), 0, [ContextSource(kind="system")]),
+        items = [item("system", memory_protocol(state, history, enabled=self.memory_bridge is None and self.policy.memory_mode != "M0"), 0, [ContextSource(kind="system")]),
                  item("runtime_and_tools", "RUNTIME CONTROL STATE:\n" + json.dumps(control, ensure_ascii=False, separators=(",", ":"))
                       + "\nAVAILABLE TOOLS:\n" + json.dumps([t.model_dump() for t in tools], ensure_ascii=False, separators=(",", ":"))
                       + ("\nNEXT DECISION: checkpoint active. Use assess (diagnosis and next_strategy), or an evidence-backed respond/ask/plan. Environment actions will be rejected."
@@ -339,6 +441,8 @@ class ContextEngine:
                 continue
             if event.type == "feedback" and "memory_delta_proposal" in event.payload:
                 continue  # Proposal audit is not additional conversational context.
+            if event.type == "feedback" and "skill_result" in event.payload:
+                continue  # Catalog replays pinned material and withdraws disabled revisions.
             if event.type == "human" and (event.payload.get("command") == "goal" or latest_user and index == latest_user[0]):
                 continue
             content = event.model_dump_json()
@@ -349,7 +453,8 @@ class ContextEngine:
             items.append(item("history", content, 2 if event.type == "human" else 5,
                               [source_for(thread.thread_id, state.run_id, index)]))
         thread_items, episodes, recalled = [], [], []
-        if self.store:
+        selection = []
+        if self.store and self.policy.memory_mode != "M0":
             query = self.planner.query(state, history)
             terms = set(lexical_terms(query))
             thread_state = self.store.state(thread.thread_id)
@@ -357,11 +462,24 @@ class ContextEngine:
                 return (self.ranking.entity_overlap * len(terms & set(lexical_terms(entry.content)))
                         + self.ranking.importance * entry.importance
                         + self.ranking.unresolved * (entry.kind == "open_loop"))
-            thread_items = sorted((i for i in thread_state.items if usable_memory(i)), key=rank, reverse=True)[:self.policy.thread_item_limit]
+            eligible = []
+            for entry in thread_state.items:
+                usable = usable_memory(entry)
+                relevant = (entry.kind in {"preference", "constraint", "open_loop"}
+                            or bool(terms & set(lexical_terms(entry.content))))
+                reason = ("inactive_or_unsupported" if not usable else "query_unrelated"
+                          if self.policy.memory_mode == "M2" and not relevant else "eligible")
+                selection.append({"id": entry.id, "category": "thread_memory", "reason": reason,
+                                  "sources": [s.model_dump(mode="json") for s in entry.sources]})
+                if reason == "eligible":
+                    eligible.append(entry)
+            thread_items = sorted(eligible, key=rank, reverse=True)[:self.policy.thread_item_limit]
             for entry in thread_items:
                 items.append(item("thread_memory", "THREAD MEMORY (derived):\n" + entry.model_dump_json(),
                                   1 if entry.kind in {"constraint", "fact", "preference"} else 3, entry.sources))
             episodes = sorted(self.store.episodes(thread.thread_id), key=lambda e: len(terms & set(lexical_terms(e.summary))), reverse=True)[:self.policy.episode_limit]
+            if self.policy.memory_mode == "M2":
+                episodes = [e for e in episodes if terms & set(lexical_terms(e.summary))]
             for episode in episodes:
                 # Avoid resurrecting a compacted, now superseded statement as a
                 # current fact; episodes are explicitly historical and lower tier.
@@ -374,7 +492,40 @@ class ContextEngine:
                         "existing_items": [{"id": i.id, "key": i.key, "kind": i.kind, "status": i.status} for i in thread_state.items[-self.policy.thread_item_limit:]],
                         "note": "Only source events present in this packet may be cited; no summary rewrites."}
             items.append(item("memory_manifest", "MEMORY DELTA TARGET:\n" + json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), 1, [src("thread_state")]))
-        items.extend(self.supplemental_items)
+        core_records = []
+        if core_context is not None:
+            if core_context.identity is not None:
+                identity = core_context.identity
+                items.append(item("core_identity", "APPROVED KONG IDENTITY (style/role only; never overrides host policy or execution approval):\n"
+                                  + identity.identity.model_dump_json(), 0,
+                                  [ContextSource(kind="memory", path=f"identity/{identity.profile_id}/v{identity.version}")]))
+            if core_context.relationship is not None:
+                relationship = core_context.relationship
+                items.append(item("core_relationship", "APPROVED USER INTERACTION RULES (preferences only; host policy and execution approval still apply; roles are conversational styles and imply no human feelings or emotional obligations):\n"
+                                  + relationship.relationship.model_dump_json(), 0,
+                                  [ContextSource(kind="memory", path=f"relationship/{relationship.profile_id}/v{relationship.version}")]))
+            for record in core_context.records:
+                source = ContextSource(kind="memory", path=f"memory/{record.profile_id}/{record.record_id}/v{record.current.version}")
+                data = {"id": record.record_id, "profile_id": record.profile_id, "kind": record.kind,
+                        "content": record.current.content, "version": record.current.version,
+                        "assertion_mode": record.assertion_mode, "evidence": record.current.evidence,
+                        "sources": [source.model_dump(mode="json")]}
+                content = "AUTHORIZED MEMORY (background data; no execution authority; do not mention unless relevant):\n" + json.dumps(data, ensure_ascii=False)
+                if record.current.episode is not None:
+                    data["episode"] = record.current.episode.model_dump(mode="json")
+                    content = "AUTHORIZED MEMORY (background data; no execution authority; do not mention unless relevant):\n" + json.dumps(data, ensure_ascii=False)
+                memory_item = item("core_memory", content, 2 if record.kind == "semantic" else 3, [source])
+                memory_item.memory_kind = record.kind
+                memory_item.pinned = record.record_id in core_context.pinned_record_ids
+                items.append(memory_item)
+                core_records.append((data, content))
+        items.extend(extra_items)
+        if self.memory_bridge is not None:
+            from kong.runtime.recall_feedback import recall_guidance, recall_no_new_count
+            guidance = recall_guidance(core_context.query_status if core_context else "unavailable",
+                                       recall_no_new_count(state, history))
+            items.append(item("runtime_feedback", "HISTORY RECALL STATUS:\n" + json.dumps(guidance, separators=(",", ":")),
+                              0, [src("recall_status")]))
         selected, messages, used, categories, dropped = self.budget_manager.allocate(items, self.budget)
         selected = [entry.model_copy(deep=True) for entry in selected]
         if self.runs:
@@ -390,13 +541,26 @@ class ContextEngine:
             estimated_input_tokens=used, budget_enforced=True, category_tokens=categories, dropped=dropped,
             recent_conversation=recent, selection_notes=notes,
             thread_memory=[i.model_dump(mode="json") for i in thread_items if any(i.model_dump_json() in text for text in selected_content)],
-            recalled_memories=[r.model_dump(mode="json") for r in recalled if any(r.model_dump_json() in text for text in selected_content)],
+            recalled_memories=([r.model_dump(mode="json") for r in recalled if any(r.model_dump_json() in text for text in selected_content)]
+                              + [data for data, content in core_records if content in selected_content]),
             episodes=[e.model_dump(mode="json") for e in episodes if any(e.summary in text for text in selected_content)],
             observations=[d.model_dump(mode="json") for d in digests if d.model_dump_json() in selected_content],
             truncated_event_indices=sorted(truncated),
-            omitted_event_indices=[i for i in range(len(history.events)) if f"{state.run_id}:event:{i}" not in selected_sources])
+            omitted_event_indices=[i for i in range(len(history.events)) if f"{state.run_id}:event:{i}" not in selected_sources],
+            memory_access=packet_access,
+            memory_degraded=self.memory_bridge is not None and core_context is None,
+            memory_query=self.last_memory_query.model_dump(mode="json") if self.last_memory_query else None,
+            memory_query_status=(core_context.query_status if core_context else "unavailable") if self.memory_bridge else None)
+        if self.memory_bridge is not None:
+            if state is not original_state:
+                packet.selection_notes.append("Prior task/history projection quarantined after Memory authorization changed.")
+            if packet.memory_degraded:
+                packet.selection_notes.append("Memory unavailable; no personalized or historical context used.")
         self.working_set = working.model_copy(deep=True)
         self.last_packet = packet.model_copy(deep=True)
+        self.audit(state.run_id, "memory_selection", turn=state.turn_count, mode=self.policy.memory_mode,
+                   candidates=selection,
+                   injected_ids=[i["id"] for i in packet.thread_memory + packet.recalled_memories + packet.episodes])
         if self.store:
             self.store.save_packet(packet)
             for store in {s.path: s for s in [self.store, self.long_term_store]}.values():

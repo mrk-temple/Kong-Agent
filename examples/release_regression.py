@@ -29,8 +29,9 @@ CASES = {
 
 
 def main(args):
-    folder = ROOT/".kong"/"release-checks"/uuid4().hex[:12]
-    folder.mkdir(parents=True)
+    folder = args.output or ROOT/".kong"/"release-checks"/uuid4().hex[:12]
+    folder = folder.resolve()
+    folder.mkdir(parents=True, exist_ok=False)
     report = {"mode":"fixtures+live" if args.live else "fixtures", "cases":[], "live":[]}
     def save():
         (folder/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
@@ -39,7 +40,8 @@ def main(args):
         xml = folder/(name+".xml")
         with (folder/(name+".log")).open("w",encoding="utf-8") as log:
             try:
-                process = subprocess.run([sys.executable,"-m","pytest",*CASES[name],"-q",f"--junitxml={xml}"],
+                process = subprocess.run([sys.executable,"-m","pytest",*CASES[name],"-q",f"--junitxml={xml}",
+                    "-p", "no:cacheprovider", f"--basetemp={folder / (name + '-tmp')}"],
                     cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,timeout=180)
                 status = "passed" if process.returncode == 0 else "failed"
             except subprocess.TimeoutExpired:
@@ -91,6 +93,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live",action="store_true",help="Explicit paid real-model evaluation")
+    parser.add_argument("--output", type=Path, help="New directory for logs, test data and the report")
     parser.add_argument("--cases",nargs="+",choices=list(CASES),default=list(CASES))
     parser.add_argument("--proxy",help="Explicit trusted proxy for live research")
     raise SystemExit(main(parser.parse_args()))

@@ -144,6 +144,8 @@ class ObservationDigest(Contract):
 
 
 class ContinuityPolicy(Contract):
+    # M1 preserves RC5 behavior; M2 is an explicit experimental relevance filter.
+    memory_mode: Literal["M0", "M1", "M2"] = "M1"
     recent_messages: int = Field(default=12, ge=0)
     recent_chars: int = Field(default=12000, ge=0)
     observation_chars: int = Field(default=2200, ge=100)

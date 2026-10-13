@@ -1,43 +1,49 @@
-# Public release checklist — Kong-Agent 0.4.0rc5
+# 发布检查 — Local Preview 0.0.0 / Runtime 0.5.0rc1
 
-2026-10-05：V0.4 在 RC5 的固定验收范围通过。本次将 RC5 整理为 GitHub 主分支更新，保留 `0.4.0rc5` 预发布版本。项目延续 [MIT](LICENSE) 许可，公开仓库为 [mrk-temple/Kong-Agent](https://github.com/mrk-temple/Kong-Agent)。
+2026-10-13。延续 [mrk-temple/Kong-Agent](https://github.com/mrk-temple/Kong-Agent) 的公开主分支与 [MIT](LICENSE) 许可，作为预发布候选交付；保留本地开发分支、内部证据和运行数据。
 
-## 代码与验收身份
+## 发布范围
 
-- [x] 冻结 Runtime 源码为 `9a3e23e621404a5be8f35bc277a02ccb6fcc2f94`；GitHub 整理仅修改公开文档，不改源码、版本或依赖锁文件。
-- [x] 完整冻结批次 33/33 个物理试次：模型 32/32，恢复机制 1/1，未尝试 0。旧模型题 11/11、PLAN 6/6、变化题 16/16、错误完成 0/25；组间重叠，不相加。
-- [x] 已观察反例阻断为 0。检查来自本地反例探针和源码复核，不代表第三方审计或任意任务可靠性。历史失败不重判、不拼接。
-- [x] 冻结源码 Windows 全量 532 passed / 2 skipped；Linux 本地受限容器 523 passed / 11 skipped。两平台跳过范围、模型分母和未测量项见 [EVALUATION](EVALUATION.md)。
-- [x] 源码目录外 wheel 安装 9/9；离线固定机制组 12/12、3/3、16/16；固定决策真实资源收尾 3/3、实际 host/Docker 工具任务 6/6。
+- `src/kong/`、`tests/`、`examples/`、`.github/workflows/`、`scripts/`、`web/`。
+- README、公开用户/记忆/开发指南、架构、评测、恢复、版本说明、Changelog、依赖锁与空值配置模板。
+- 内置技能及 references、GUI 构建资源和一张空白首次启动截图。
+- `docs/`、设计/交接单、原始模型日志、凭据、本地模型配置、数据库、依赖目录和缓存继续在本地保留。
 
-## 公开内容与许可
+源码快照使用 `examples/prepare_public_release.py` 的显式允许列表。sdist 同时包含前端源码与 Windows 启动脚本，wheel 包含 Python 实现、技能和内置 GUI。依赖目录、TypeScript 缓存和运行数据不进入任何源码/包成员。
 
-- [x] `LICENSE` 为 MIT，版权主体 `mrk-temple`；不改变已有公开历史和仓库可见性。
-- [x] 公开范围为 `src/kong/`、`tests/`、`examples/`、`.github/workflows/` 和显式根目录文件。内置技能及 references 保留。
-- [x] 内部 `docs/`、`DESIGN.md`、交接单、计划、原始模型日志、本地配置、凭据、数据库和缓存不进入公开源码或包。
-- [x] `.env.example` 仅提供空值模板；程序不会自动加载 `.env`。
-- [x] README、架构、恢复、评测及 Changelog 统一说明当前 RC5 身份与能力边界。
+## 本轮验证
 
-## 上传前与上传后核对
+| 检查 | 结果 |
+|---|---|
+| 最新本地源码基线 | 909 passed / 5 skipped |
+| 修整后完整工程 | 909 passed / 5 skipped / 0 failed |
+| 前端与静态检查 | 7 tests、类型检查、构建、Ruff 0.16.9、锁文件检查通过 |
+| 固定发布回归 | 7 类、13 项通过，0 skipped |
+| 实际浏览器 + 离线 Provider | 9 组通过，page errors 0 |
+| 源码目录外安装 | 12/12；隔离导入、离线演示、技能、GUI 资源、TUI、本地状态 |
 
-每次文档或源码修改后重建最终包与候选，核对源码/ZIP/manifest、wheel/sdist 的实际成员和 SHA-256。原 RC5 包只证明冻结时身份；文档整理后的包需要新的哈希和安装核验。
+五项跳过为两项 Windows 符号链接权限与三项真实 Docker 环境不足。完整工程之后修正了安装探针的中文资源解码和身份输出换行，Runtime、测试与前端字节保持不变；安装探针已直接重测。当前执行源码指纹与历史模型样本的边界见 [EVALUATION](EVALUATION.md)。
 
-扫描已知凭据值、常见模式和所有本地已获取 refs 可达历史；同时人工核对待推送提交的路径，不能只依靠 `.gitignore`。扫描报告仅记录脱敏位置，不复制匹配值。扫描不覆盖未知凭据格式、不可达对象、GitHub 缓存或他人 fork。
+本轮没有追加收费模型请求。当前仍是 Windows 本地预览；完整 V0.5 效果、真人长期使用与跨平台产品验收尚未通过。
 
-上传使用保留公开历史的正常提交与快进。推送后核对远端主分支 SHA 与最终文件，并等待对应提交的 [GitHub Actions](https://github.com/mrk-temple/Kong-Agent/actions) 完成 Windows、Linux 和 lint 检查。托管 runner 的平台限制可能使跳过数与本地不同，按实际日志报告；本地回归不能代替托管 CI。
+## 上传核验
 
-## 可复现检查
+每次发布都检查最终 wheel / sdist / ZIP 的成员、已知凭据值、常见凭据格式和 SHA-256；随后核对全部暂存路径及其确切 Git blob 字节与源码候选的一致性。扫描报告只保留脱敏位置和类别。
+
+Git 使用普通提交与正常快进推送，保留公开历史。包含内部评测资料的旧开发分支只在本地保留。本轮扫描拟发布的 main 祖先链与已取得的本地可达历史，另独立检查发布快照；不打开本地用户 Memory 数据库。
+
+GitHub Release 保留 prerelease 标识，上传扫描后的 wheel、sdist、源码 ZIP 和哈希清单。上传后核对远端主分支 SHA、仓库可见性、实际资源与本地工作树，再核对对应提交的 [GitHub Actions](https://github.com/mrk-temple/Kong-Agent/actions)。托管 CI 的平台结果按 Actions 实际状态报告，本地通过不能替代托管结果。
+
+## 可复现入口
+
+完整的环境、临时目录和打包命令见 [DEVELOPMENT](DEVELOPMENT.md)。核心命令为：
 
 ```powershell
-uv sync --frozen --all-extras --python 3.12
-uv run --no-sync playwright install chromium
-uv run --no-sync pytest -q -r s
-uvx ruff@0.16.9 check .
-uv lock --check
-uv build --out-dir dist/<new-run>
-uv run python examples/verify_release_install.py dist/<new-run>/kong_agent-0.4.0rc5-py3-none-any.whl
-uv run python examples/audit_release_safety.py --output .kong/<new-audit>.json
-uv run python examples/prepare_public_release.py --output dist/<new-candidate> --artifact dist/<new-run>/kong_agent-0.4.0rc5-py3-none-any.whl --artifact dist/<new-run>/kong_agent-0.4.0rc5.tar.gz
+uv run --no-sync python examples/local_preview_freeze.py --check
+uv run --no-sync python examples/release_regression.py --output dist/fixed-release-check
+uv build --out-dir dist/release
+uv run --no-sync python examples/prepare_public_release.py --output dist/candidate --artifact dist/release/kong_agent-0.5.0rc1-py3-none-any.whl --artifact dist/release/kong_agent-0.5.0rc1.tar.gz
+uv run --no-sync python examples/verify_release_install.py dist/release/kong_agent-0.5.0rc1-py3-none-any.whl --output E:\Projects\.workspace\tmp\kong-isolated-install
 ```
 
-Linux 安装浏览器使用 `playwright install --with-deps chromium`。已知值比对可显式传入 `--secret-file`，文件只在本机内存读取。审计退出成功仅表示报告生成，发现项须分类；候选生成器拒绝有匹配值、内部文件或非法成员的候选。生成器的通用 `publication_blockers` 提醒不能取代本文件中的 MIT 许可和用户上传授权；它也不代表候选已上传。
+候选和安装输出必须使用新目录。生成器仍将源码标记为待审阅快照；其通用出版授权提醒不能代替本项目已有 MIT 许可、本轮用户发布指令及实际 GitHub 发布状态。

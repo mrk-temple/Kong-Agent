@@ -45,7 +45,8 @@ class Runtime:
                  on_event: Callable[[str, dict], None] | None = None, driver: str = "compatible",
                  permissions: PermissionPolicy | None = None, read_concurrency: int = 3,
                  model_retry_limit: int = 2, completion_contract: CompletionContract | dict | None = None,
-                 completion_scope: str | None = None, progress_paths: list[str] | None = None):
+                 completion_scope: str | None = None, progress_paths: list[str] | None = None,
+                 memory_mode: str | None = None, memory_bridge=None, memory_capture: bool | None = None):
         self.model = model
         self.workspace = workspace
         self.registry = registry
@@ -59,6 +60,24 @@ class Runtime:
         if context_engine is not None and context_builder is not None:
             raise ValueError("Pass context_engine or context_builder, not both")
         self.context_engine = context_engine or ContextEngine(context_builder)
+        if memory_mode is not None:
+            from kong.continuity.memory_contracts import ContinuityPolicy
+            selected_policy = ContinuityPolicy.model_validate({**self.context_engine.policy.model_dump(), "memory_mode": memory_mode})
+            if context_engine is not None and context_engine.policy != selected_policy:
+                raise ValueError("Pass memory_mode or an engine with the same policy")
+            self.context_engine.policy = selected_policy
+        if self.context_engine.legacy and self.context_engine.policy.memory_mode != "M1":
+            raise ValueError("Experimental memory modes require the standard ContextEngine compiler")
+        if memory_bridge is not None:
+            if self.context_engine.memory_bridge not in (None, memory_bridge):
+                raise ValueError("Pass one Memory Bridge")
+            self.context_engine.attach_memory(memory_bridge)
+        if self.context_engine.memory_bridge is not None:
+            if memory_capture and not self.context_engine.memory_bridge.can_observe:
+                raise ValueError("Memory capture requires the host's memory.observe capability")
+            for path in self.context_engine.memory_bridge.protected_paths:
+                workspace.reserve_file(path)
+            self.context_engine.memory_binding["capture"] = "on" if memory_capture else "off"
         self.thread_store = thread_store or (ThreadStore(store.directory.parent / "context.db") if store else None)
         if self.thread_store:
             existing = self.thread_store.thread_for_run(state.run_id)
@@ -71,11 +90,16 @@ class Runtime:
                         prior = self.store.load(prior_id)
                     except (OSError, ValueError):
                         continue
+                    if prior.memory_binding is not None:
+                        bridge = self.context_engine.memory_bridge
+                        if bridge is None or any(prior.memory_binding.get(k) != v for k, v in bridge.principal.items()):
+                            raise ValueError("Thread requires its original Memory Core Profile and scopes")
+                        if prior.memory_binding.get("access"):
+                            self.context_engine.expected_store_id = prior.memory_binding["access"]["store_id"]
                     if project_id is None:
                         project_id = prior.project_id
                     elif project_id != prior.project_id:
                         raise ValueError("Thread already belongs to a different project scope; start a new Thread")
-                    break
             self.thread_store.attach_run(self.thread.thread_id, state.run_id, workspace.root)
         else:
             self.thread = Thread(thread_id=thread_id or state.run_id, workspace=str(workspace.root), title=state.goal)
@@ -89,7 +113,7 @@ class Runtime:
             for name in registry.names():
                 if name != "recall_history":
                     self.registry.register(registry.get(name))
-            self.registry.register(RecallHistory(self.store, self.thread_store, self.thread))
+            self.registry.register(RecallHistory(self.store, self.thread_store, self.thread, memory_bridge=self.context_engine.memory_bridge))
             self.executor = ToolExecutor(self.registry)
         if context_engine is None and hasattr(model, "config"):
             self.context_engine.budget = ContextBudget(window_tokens=model.config.context_window_tokens,
@@ -170,10 +194,84 @@ class Runtime:
             mode: Mode = Mode.AUTO, **kwargs) -> "Runtime":
         return cls(model, workspace, registry, create_run_state(goal, mode), **kwargs)
 
+    async def memory_access_changed(self) -> bool:
+        engine = self.context_engine
+        if engine.memory_bridge is None or engine.allow_initial_binding or engine.memory_binding is None:
+            return False
+        access = await engine.memory_bridge.get_access_state()
+        return bool(access is not None
+                    and engine.expected_store_id in (None, access.store_id)
+                    and engine.memory_binding.get("access") != access.model_dump(mode="json"))
+    async def start_fresh_after_memory_change(self, fresh_goal: str, *, model: Model | None = None) -> "Runtime":
+        """Start a new Run in this Thread after a Core mutation, without old Run content."""
+        if not isinstance(fresh_goal, str) or not fresh_goal.strip():
+            raise ValueError("A fresh Run requires a nonempty new goal")
+        if self._running:
+            raise ValueError("Wait for the current Run driver to stop before starting a fresh Run")
+        if self.pending_action_id or self.pending_action_ids:
+            raise ValueError("Resolve unknown action outcomes before starting a fresh Run")
+        engine = self.context_engine
+        if self.store is None or self.thread_store is None or engine.memory_bridge is None:
+            raise ValueError("A persistent Memory Core Thread is required for a fresh Run")
+        access = await engine.memory_bridge.get_access_state()
+        if access is None or engine.expected_store_id not in (None, access.store_id):
+            raise ValueError("Memory access is unavailable or belongs to a different store")
+        access_json = access.model_dump(mode="json")
+        if engine.allow_initial_binding or engine.memory_binding is None or engine.memory_binding.get("access") == access_json:
+            raise ValueError("Memory access has not changed for this Run")
+        fresh_engine = ContextEngine(policy=engine.policy.model_copy(deep=True),
+                                     budget=engine.budget.model_copy(deep=True),
+                                     ranking=engine.ranking.model_copy(deep=True))
+        fresh = Runtime.new(fresh_goal.strip(), model or self.model, self.workspace, self.registry,
+                            self.state.mode, store=self.store, context_engine=fresh_engine,
+                            thread_id=self.thread.thread_id, thread_store=self.thread_store,
+                            project_id=engine.project_id, on_event=self.on_event, driver=self.driver,
+                            permissions=self.executor.permissions.model_copy(deep=True),
+                            read_concurrency=self.read_concurrency, model_retry_limit=self.model_retry_limit,
+                            memory_bridge=engine.memory_bridge,
+                            memory_capture=False)
+        # A further mutation before first use is a mismatch, never a rebind.
+        fresh.context_engine.memory_binding["access"] = access_json
+        fresh.context_engine.expected_store_id = access.store_id
+        fresh.context_engine.allow_initial_binding = False
+        fresh.events_json = getattr(self, "events_json", False)
+        self.history.append("feedback", self.state.turn_count,
+                            memory_access_handoff={"new_run_id": fresh.state.run_id})
+        if self.state.status in {Status.RUNNING, Status.WAITING_USER}:
+            self.state.status = Status.STOPPED
+            self.state.stop_reason = "memory_access_changed"
+            self.state.pending_question = None
+        self.save()
+        fresh.save()
+        return fresh
     @classmethod
     def restore(cls, snapshot: Snapshot, model: Model, workspace: Workspace,
                 registry: ToolRegistry, **kwargs) -> "Runtime":
         from pathlib import Path
+        from kong.continuity.memory_contracts import ContinuityPolicy
+        saved_policy = snapshot.continuity_policy or ContinuityPolicy()
+        if kwargs.get("memory_mode") is not None and kwargs["memory_mode"] != saved_policy.memory_mode:
+            raise ValueError("Restore must preserve the saved memory mode")
+        supplied_engine = kwargs.get("context_engine")
+        bridge = kwargs.get("memory_bridge") or (supplied_engine.memory_bridge if supplied_engine is not None else None)
+        if snapshot.memory_binding is not None and (bridge is None or any(
+                snapshot.memory_binding.get(k) != v for k, v in bridge.principal.items())):
+            raise ValueError("Restore requires the original Memory Core Profile and scopes")
+        if snapshot.memory_binding is not None:
+            capture = snapshot.memory_binding.get("capture", "off") == "on"
+            if kwargs.get("memory_capture") is not None and kwargs["memory_capture"] != capture:
+                raise ValueError("Restore cannot change the Run's original Memory capture policy")
+            kwargs["memory_capture"] = capture
+        elif bridge is not None:
+            if kwargs.get("memory_capture"):
+                raise ValueError("Legacy Runs have no original capture authorization; start a new Run")
+            kwargs["memory_capture"] = False
+        if supplied_engine is not None and supplied_engine.policy != saved_policy:
+            raise ValueError("Restore must preserve the saved continuity policy")
+        if snapshot.continuity_policy is not None and supplied_engine is None:
+            kwargs["context_engine"] = ContextEngine(policy=saved_policy,
+                budget=ContextBudget(window_tokens=model.config.context_window_tokens,
+                                     output_reserved_tokens=model.config.max_tokens) if hasattr(model, "config") else None)
         if Path(snapshot.workspace).resolve() != workspace.root:
             raise ValueError("Resume must use the original workspace")
         if "thread_id" in kwargs:
@@ -195,6 +293,12 @@ class Runtime:
                 thread_store.create(workspace.root, snapshot.state.goal, thread_id=snapshot.thread_id)
         runtime = cls(model, workspace, registry, snapshot.state, history=snapshot.history,
                       driver=snapshot.driver, thread_id=snapshot.thread_id, **kwargs)
+        if runtime.context_engine.memory_bridge is not None:
+            runtime.context_engine.allow_initial_binding = False  # Includes legacy snapshots with unknown original authority.
+        if snapshot.memory_binding is not None:
+            runtime.context_engine.memory_binding = dict(snapshot.memory_binding)
+            if snapshot.memory_binding.get("access"):
+                runtime.context_engine.expected_store_id = snapshot.memory_binding["access"]["store_id"]
         runtime.pending_action_id = snapshot.pending_action_id
         runtime.pending_action_ids = list(snapshot.pending_action_ids)
         if snapshot.pending_action_id and snapshot.pending_action_id not in runtime.pending_action_ids:
@@ -233,7 +337,11 @@ class Runtime:
         return runtime
 
     def snapshot(self) -> Snapshot:
-        return Snapshot(workspace=str(self.workspace.root), state=self.state,
+        from kong.continuity.memory_contracts import ContinuityPolicy
+        policy = self.context_engine.policy if self.context_engine.policy != ContinuityPolicy() else None
+        return Snapshot(schema_version=6 if self.context_engine.memory_bridge else 5 if policy else 4, continuity_policy=policy,
+                        memory_binding=self.context_engine.memory_binding,
+                        workspace=str(self.workspace.root), state=self.state,
                         history=self.history, pending_action_id=self.pending_action_id, driver=self.driver,
                         thread_id=self.thread.thread_id, project_id=self.context_engine.project_id, metrics=self.metrics,
                         pending_action_ids=self.pending_action_ids, queued_inputs=self.queued_inputs,
@@ -359,10 +467,14 @@ class Runtime:
     async def memory_command(self, command: str, *, item_id: str = "", text: str = "",
                              kind: str = "fact", key: str = "", scope: str = "thread"):
         """Human-only memory management; never changes Runtime control state."""
+        if self.context_engine.memory_bridge is not None:
+            raise ValueError("Legacy Memory commands are disabled; use the independent memory-core commands")
         from kong.continuity.memory import source_for, stable_id
         from kong.continuity.memory_contracts import MemoryDelta, MemoryMutation, MemoryScope, MemoryStatus
         from kong.continuity.retrieval import scope_matches
         engine = self.context_engine
+        if engine.policy.memory_mode == "M0":
+            raise ValueError("Derived memory is disabled for this Run")
         if not engine.store:
             raise ValueError("Memory management requires persistent storage")
         if command == "rebuild":
@@ -497,6 +609,12 @@ class Runtime:
                     self.store.save_report(self.state.run_id, run_report(self))
 
     async def _generate(self, context):
+        if not await self.context_engine.validate_packet(context):
+            context = await self.context_engine.prepare(thread=self.thread, state=self.state,
+                                                       history=self.history, tools=self.registry.definitions())
+            if not await self.context_engine.validate_packet(context):
+                from kong.models.base import ModelError
+                raise ModelError("Memory authorization changed during context assembly; retry with fresh input")
         started = perf_counter()
         self.metrics.model_calls += 1
         try:
@@ -505,7 +623,12 @@ class Runtime:
                 self.model.on_stream = self._stream_progress
             self._model_task = asyncio.create_task(self.model.generate(context))
             self.emit("model_waiting", {"reason": "waiting_for_validated_model_decision"})
-            return await self._model_task
+            result = await self._model_task
+            if not await self.context_engine.validate_packet(context):
+                from kong.models.base import ModelError
+                self.emit("decision_discarded", {"reason": "memory_authorization_changed"})
+                raise ModelError("Memory authorization changed while generating; result discarded. Provide fresh input.")
+            return result
         finally:
             self._model_task = None
             self.emit("model_finished", {})
@@ -631,7 +754,10 @@ class Runtime:
                 if isinstance(decision, (Act, NeedDiscovery)) and not context_only:
                     self.state.requires_evidence = True
                 denial = self.controller.authorize(self.state, decision, context_only=context_only)
-                if denial:
+                recall_transition = self._limit_recall(decision)
+                if recall_transition is not None:
+                    transition = recall_transition
+                elif denial:
                     self.history.append("feedback", self.state.turn_count, error=denial)
                     transition = self.controller.checkpoint(self.state)
                 else:
@@ -722,6 +848,20 @@ class Runtime:
         with metrics_scope(self.metrics):
             return await self._action_batch(decision)
 
+    def _limit_recall(self, decision):
+        if self.context_engine.memory_bridge is None or not isinstance(decision, (Act, NeedDiscovery)):
+            return None
+        from kong.continuity.recall import RecallHistory
+        from kong.runtime.recall_feedback import RECALL_LIMIT, recall_no_new_count
+        if recall_no_new_count(self.state, self.history) < RECALL_LIMIT:
+            return None
+        if not any(action.name in self.registry.names() and isinstance(self.registry.get(action.name), RecallHistory)
+                   for action in decision.actions):
+            return None
+        self.history.append("feedback", self.state.turn_count, recall_limit=RECALL_LIMIT,
+                            instruction="Repeated history reads supplied no new information; no further recall action dispatched.")
+        return self.controller.limit_recall(self.state, self.history)
+
     async def _action_batch(self, decision: Act | NeedDiscovery) -> bool:
         if any(action.name in self.registry.names() and isinstance(self.registry.get(action.name), SkillTool)
                for action in decision.actions):
@@ -742,6 +882,8 @@ class Runtime:
         while index < len(decision.actions):
             if self._apply_inputs():
                 self.emit("batch_revoked", {"remaining": len(decision.actions) - index, "reason": "new_user_input"})
+                return True
+            if self._limit_recall(Act(actions=[decision.actions[index]])) is not None:
                 return True
             group = [decision.actions[index]]
             if self._parallel_read(group[0]):

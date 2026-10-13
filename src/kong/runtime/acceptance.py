@@ -31,7 +31,8 @@ def has_declared_acceptance(state):
 def acceptance_problem(state, history):
     has_environment_conditions = bool(state.success_criteria or state.completion_contract or
         state.plan and state.plan.success_criteria)
-    if state.completion_scope == "mechanical" or not (history.observations or state.requires_evidence or has_environment_conditions):
+    has_environment_action = any(observation.effect != "read" or not observation.success for observation in history.observations)
+    if state.completion_scope == "mechanical" or not (has_environment_action or has_environment_conditions):
         return None
     if has_declared_acceptance(state):
         return None

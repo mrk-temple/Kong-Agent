@@ -1,24 +1,11 @@
 """Transactional derived memory and FTS5 index; original History stays in RunStore."""
 import json
 from pathlib import Path
-import re
 
 from kong.continuity.contracts import ContextPacket, now
 from kong.continuity.memory_contracts import Episode, MemoryRecord, MemoryStatus, ThreadItem, ThreadState
 from kong.continuity.storage import ThreadStore
-
-
-def lexical_terms(text: str) -> list[str]:
-    # unicode61 does not segment Chinese words. Add overlapping CJK bigrams
-    # explicitly, while retaining Latin words. No vector service required.
-    words = re.findall(r"[a-zA-Z0-9_]+|[\u3400-\u9fff]+", text.lower())
-    terms = []
-    for word in words:
-        if re.fullmatch(r"[\u3400-\u9fff]+", word):
-            terms.extend(word[i:i + 2] for i in range(max(1, len(word) - 1)))
-        else:
-            terms.append(word)
-    return list(dict.fromkeys(terms))
+from kong.lexical import lexical_terms as lexical_terms
 
 
 class MemoryStore(ThreadStore):

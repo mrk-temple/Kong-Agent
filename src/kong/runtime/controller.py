@@ -69,6 +69,19 @@ class RuntimeController:
         state.status = Status.WAITING_USER
         return Transition(control="pause", reason="plan_approval_required")
 
+    def limit_recall(self, state: RunState, history: History) -> Transition:
+        from kong.runtime.recall_feedback import RECALL_QUESTION
+        decision = NeedUserInput(question=RECALL_QUESTION)
+        denial = self.authorize(state, decision)
+        if not denial:
+            history.append("decision", state.turn_count, decision=decision.model_dump(mode="json"), actor="host_recall_limit")
+            transition = self.transition(state, decision, history)
+            if transition.control == "pause":
+                return transition
+        # A declared ask prerequisite cannot be waived by a Memory read budget.
+        state.status, state.stop_reason = Status.STOPPED, "recall_limit_requires_task_evidence"
+        return Transition(control="stop", reason=state.stop_reason)
+
     @attributed("validation_seconds")
     def transition(self, state: RunState, decision: Decision, history: History) -> Transition:
         if isinstance(decision, PlanProposal):

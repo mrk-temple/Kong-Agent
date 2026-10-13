@@ -1,8 +1,26 @@
-# ARCHITECTURE — Kong-Agent 0.4.0rc5
+# ARCHITECTURE — Kong-Agent 0.5.0rc1
 
 本文描述当前代码结构与控制闭环，节点均对照 `src/kong/` 实际实现；能力限制与验证方式见 [README](README.md) 与 [PUBLIC_RELEASE_CHECKLIST](PUBLIC_RELEASE_CHECKLIST.md)。行号会随修改漂移，引用以模块与符号名为准。
 
-## 模块地图
+## 本地产品与独立 Memory Core
+
+当前 Local Preview `0.0.0` 的 GUI、CUI、TUI 使用 `application/service.py` 的 `ApplicationService`。它管理 Thread / Run 锁、耐久命令回执与安全事件，通过 `runtime_factory.py` 复用原 Runtime；HTTP / SSE 在 `local_api/`，Textual 在 `tui/`，React 源码在 `web/`。
+
+`memory/service.py` 的 `MemoryService` 与 `sqlite_store.py` 独立持久化 Profile、记录、来源、候选和记忆瓶。`application/memory_bridge.py` 的 `MemoryBridge` 为每个 Run 提供有界 worker，管理面板使用 `memory_admin.py` 的独立 owner worker。`continuity/source_guard.py` 的 `SourceAccessGuard` 在实际上下文编译和历史召回时检查来源授权；授权变更可要求 fresh Run。
+
+模型、前端和应用事件库不获得 Core 的独立持久化权威。默认 capture off；有限暂存不等于长期保存授权。检索、预算选择、请求装配、HTTP 派发和模型答案分别核验。
+
+本地服务只监听 loopback，配对会话、精确 Host / Origin、CSRF 与 DTO 检查位于 HTTP 适配层。强工具默认不开；文件工具范围为数据目录的 `workspace/`，Core 和模型配置在其范围之外。源码资源身份由公开的 `examples/local_preview_freeze.py` 生成，不依赖内部开发证据。
+
+## Runtime 与长任务模块
+
+V0.5 在现有控制循环外增加长任务驱动、来源标注诊断和版本验收汇总。`evaluation/acceptance.py` 是版本效果合同的外部汇总，区别于 `runtime/acceptance.py` 的单次运行完成覆盖检查；两者均不替模型补产物或批准动作。
+
+`ContinuityPolicy.memory_mode` 选择 M0/M1/M2。M0 抑制派生提取、合并、压缩 Episode、检索注入、manifest 与记忆管理，保留原始历史及相同预算编译。M1 保持原有资格过滤和排序；M2 仅增加 Thread 事实/Episode 的词法相关性限制，仍先检查来源支持和有效状态，长期记忆继续使用原作用域过滤。选择诊断保存在已有 context_audit，不把相关性标注传给模型。该实验尚未证明下游收益。
+
+实验 M0/M2 要求标准 ContextEngine 编译器；旧或自定义 ContextBuilder 会绕过这些过滤，因此在构造时拒绝组合。M1 的既有 Builder 兼容入口保留。
+
+`skills/lifecycle.py` 保存内容寻址的候选/验证/启用/停用/退役记录。`SkillCatalog` 绑定正文与引用哈希，恢复后从原始 skill_result 重建版本固定；新读取拒绝漂移资源，已禁用材料不再从 history 反馈绕过撤回重新注入。旧未管理技能保持原加载入口，新候选的状态不能由正文自己声明为 active。生命周期记录不授予工具、预算或完成证据。
 
 | 模块 | 职责 |
 |---|---|

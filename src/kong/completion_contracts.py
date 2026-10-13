@@ -113,7 +113,7 @@ class CompletionContract(Declaration):
             raise ValueError("Completion requires declared final artifacts")
         if self.version == 2 and self.allow_completion and not (any(a.require_readback for a in self.artifacts) or any(c.verify_final for c in self.commands)):
             raise ValueError("Completion requires a final readback or verification evidence anchor")
-        if self.family == "code" and (not self.commands or not any(c.verify_final for c in self.commands)):
+        if self.family == "code" and self.allow_completion and (not self.commands or not any(c.verify_final for c in self.commands)):
             raise ValueError("Code completion requires a final verification command")
         for command in self.commands:
             executable = command.argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()

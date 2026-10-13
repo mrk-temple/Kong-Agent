@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "freeze_policy": "Do not change cases or expected results while tuning. Record every run, including failures.",
+  "cases": [
+    {"id":"r01","project":"Orion","focus":"Let's focus on the Orion recovery experience.","query":"那次最后怎么处理的？"},
+    {"id":"r02","project":"Lyra","focus":"We are discussing the Lyra recovery experience.","query":"What happened in the end?"},
+    {"id":"r03","project":"Vega","focus":"我们正在聊 Vega 的恢复经历。","query":"那回后来如何验收？"},
+    {"id":"r04","project":"Draco","focus":"Let's focus on the Draco outage.","query":"How did that incident end?"},
+    {"id":"r05","project":"Atlas","focus":"Let's focus on the Atlas recovery.","query":"What was its final badge?"},
+    {"id":"r06","project":"Pavo","focus":"我们在讨论 Pavo 的恢复过程。","query":"那次后来怎样收尾？"},
+    {"id":"r07","project":"Argo","focus":"Let's focus on the Argo migration.","query":"How did it end?"},
+    {"id":"r08","project":"Nova","focus":"Let's discuss Nova recovery.","query":"那次最后采用什么方案？"},
+    {"id":"r09","project":"Eridanus","focus":"Let's focus on the Eridanus recovery.","query":"What happened then?"},
+    {"id":"r10","project":"Cygnus","focus":"Let's focus on the Cygnus outage.","query":"那次最终结果是什么？"},
+    {"id":"r11","project":"Sirius","query":"Recall the Sirius recovery and its badge."},
+    {"id":"r12","project":"Rigel","query":"What was the Rigel outage verification badge?"},
+    {"id":"r13","project":"Altair","query":"How did the Altair migration finish?"},
+    {"id":"r14","project":"Mira","query":"Mira 的恢复经历怎么结束？"},
+    {"id":"r15","project":"Antares","query":"Please recall the Antares project milestone."},
+    {"id":"r16","project":"Capella","query":"What was the Capella recovery badge?"},
+    {"id":"r17","project":"星河","focus":"我们在聊「星河」项目的恢复经历。","query":"那次最后怎么处理的？"},
+    {"id":"r18","project":"Auriga","focus":"Let's focus on the Auriga recovery from February.","query":"How did that time end?","date":"2026-02-03","same_project_decoy_date":"2026-01-03"},
+    {"id":"r19","project":"Hydra","focus":"Let's focus on the Hydra recovery on 2026-06-12.","query":"那次最后的结果呢？","date":"2026-06-12","same_project_decoy_date":"2026-06-02"},
+    {"id":"r20","project":"Delphinus","focus":"Let's discuss episode {target_id}.","query":"那回最后怎么样？"}
+  ],
+  "abstentions": [
+    {"id":"a01","focus":"Let's focus on Orion and Lyra recovery.","query":"How did that incident end?","status":"ambiguous"},
+    {"id":"a02","focus":"Let's focus on Orion recovery.","query":"那次最后如何收尾？","same_project_decoy":true,"status":"ambiguous"},
+    {"id":"a03","focus":"","query":"How did that incident end?","status":"ambiguous"},
+    {"id":"a04","focus":"","query":"recovery badge","status":"no_usable_information"}
+  ]
+}

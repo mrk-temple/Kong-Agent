@@ -89,13 +89,62 @@ def remaining_steps(state, results, failed, output_failed, *, acceptance_require
     return steps[:40]
 
 
+def handoff_read_prerequisites(state, history, workspace):
+    """Describe current reads without treating absent outputs as caller input."""
+    from kong.runtime.completion import read_evidence
+    contract = state.completion_contract
+    missing = [path for path in contract.read_before_ask if not read_evidence(path, state, history, workspace)]
+    work, unavailable = [], []
+    protected = set()
+    for path in contract.protected_paths:
+        try:
+            protected.add(workspace.resolve(path))
+        except (ValueError, OSError):
+            pass
+    for path in missing:
+        try:
+            target = workspace.resolve(path)
+            if not target.is_file():
+                (unavailable if target in protected or target.exists() else work).append(path)
+        except (ValueError, OSError):
+            unavailable.append(path)
+    return {"missing_current_reads": missing, "absent_output_paths": work, "unavailable_input_paths": unavailable}
+
+
 @verified_pass("feedback")
 def completion_guidance(gate, state, history):
     # Do not encourage environment work before approval, after changed input, or
     # when an interrupted intent still needs explicit resolution.
-    if (not (state.completion_contract or state.success_criteria or state.plan) or not history.observations or state.contract_invalidated
+    if (not (state.completion_contract or state.success_criteria or state.plan) or state.contract_invalidated
             or state.requires_replan or state.pending_approval or state.mode.value == "plan" and
             (not state.plan or state.plan.approved_revision != state.plan.revision)):
+        return None
+    contract = state.completion_contract
+    if contract and not contract.allow_completion:
+        prerequisites = handoff_read_prerequisites(state, history, gate.workspace)
+        missing = prerequisites["missing_current_reads"]
+        steps = [{"kind": "task_work", "path": path,
+                  "instruction": "First produce this absent output as part of the authorized task, then read it back. "
+                      "A missing output is not missing caller input. This suggestion does not authorize a write."}
+                 if path in prerequisites["absent_output_paths"] else
+                 {"kind": "unavailable_input", "path": path,
+                  "instruction": "Do not recreate protected or inaccessible input; resolve the actual input or boundary problem."}
+                 if path in prerequisites["unavailable_input_paths"] else
+                 {"kind": "act", "action": {"name": "read_file", "arguments": {"path": path}},
+                  "instruction": "Satisfy the declared current-read prerequisite within permissions and after checkpoint/PLAN approval."}
+                 for path in missing]
+        question = {"question": contract.required_question} if contract.required_question is not None else {}
+        steps.append({"kind": "ask", **question,
+            "instruction": "Request the declared stage handoff; completion is forbidden in this stage."})
+        return {"scope": "declared_handoff", "completion_allowed": False,
+            **prerequisites, "required_question": contract.required_question,
+            "additional_tool_required": bool(missing), "remaining_steps": steps,
+            "instruction": "Follow runtime phase/approval first. At an assess checkpoint, assess honestly before more tools. "
+                "Perform the authorized task, producing absent outputs before their readback; do not repeatedly read a "
+                "nonexistent output or treat it as missing user input. Then ask the exact declared question only after "
+                "all current reads succeed. Terminal respond is forbidden; task implementation is still required. "
+                "No action, approval or evidence is selected for you."}
+    if not history.observations:
         return None
     from kong.contracts import FinalResponse
     probe = FinalResponse(content="verification status only")

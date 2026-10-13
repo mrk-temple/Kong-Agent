@@ -24,6 +24,7 @@ class CompatibleModel:
         self._memory_proposal = None
         self.last_usage = {}
         self.on_stream = lambda data: None
+        self.on_request = lambda stage, data: None
 
     def take_memory_delta(self):
         proposal, self._memory_proposal = self._memory_proposal, None
@@ -59,7 +60,15 @@ class CompatibleModel:
             raise ModelError("Cannot connect to the model service. Check base_url and network.", category="connection", retryable=True) from None
         return self._parse(body)
 
+    def _notify_request(self, stage, data):
+        try:
+            self.on_request(stage, data)
+        except Exception:
+            pass  # Observer failure never changes the transport decision.
+
     def _check_status(self, response):
+        if response.status_code == 200:
+            self._notify_request("delivered", {"http_status": 200, "delivery_known": "yes"})
         if response.status_code != 200:
             hints = {401: "Check the API key environment variable.", 403: "Access denied by the provider.",
                      402: "Check account payment/quota status with the provider.",
@@ -88,6 +97,7 @@ class CompatibleModel:
     async def _request(self, client, endpoint, payload, headers):
         # Total wall-clock deadline also bounds a server sending endless heartbeat lines.
         async with asyncio.timeout(self.config.timeout):
+            self._notify_request("dispatched", {"model": self.config.model})
             if not self.config.stream:
                 response = await client.post(endpoint, json=payload, headers=headers, timeout=self.config.timeout)
                 self._check_status(response)
@@ -98,7 +108,7 @@ class CompatibleModel:
             async with client.stream("POST", endpoint, json=payload, headers=headers, timeout=self.config.timeout) as response:
                 if response.status_code != 200:
                     await response.aread()
-                    self._check_status(response)
+                self._check_status(response)
                 if "text/event-stream" not in response.headers.get("content-type", ""):
                     await response.aread()
                     try:

@@ -7,10 +7,11 @@ from kong.storage import RunStore, Snapshot
 
 
 class HistorySelector:
-    def __init__(self, runs: RunStore, threads: ThreadStore, policy: RecentContextPolicy | None = None):
+    def __init__(self, runs: RunStore, threads: ThreadStore, policy: RecentContextPolicy | None = None, *, source_guard=None):
         self.runs = runs
         self.threads = threads
         self.policy = policy or RecentContextPolicy()
+        self.source_guard = source_guard
 
     @staticmethod
     def conversation(snapshot: Snapshot, thread_id: str) -> list[ConversationMessage]:
@@ -59,6 +60,9 @@ class HistorySelector:
                 snapshot = self.runs.load(run_id)
             except (OSError, ValueError):
                 notes.append(f"Skipped unreadable Run {run_id}")
+                continue
+            if self.source_guard is not None and not self.source_guard.allows_snapshot(snapshot):
+                notes.append(f"Quarantined historical Run {run_id}: Memory authorization changed or unknown")
                 continue
             if (Path(snapshot.workspace).resolve() != Path(thread.workspace).resolve()
                     or snapshot.thread_id not in (None, thread.thread_id)):

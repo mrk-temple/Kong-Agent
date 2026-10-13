@@ -1,0 +1,9 @@
+# Public source identities use stable bytes on Windows and Linux.
+* text=auto eol=lf
+*.png binary
+
+# Vite preserves upstream license comments with whitespace on blank lines.
+src/kong/local_api/static/assets/** whitespace=-blank-at-eol
+
+# Historical local evidence keeps its original bytes.
+/docs/reports/** -text

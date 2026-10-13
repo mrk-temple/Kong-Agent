@@ -21,10 +21,22 @@ def test_snapshot_excludes_nested_private_files_and_preserves_hashes(tmp_path):
     (root / "tests/docs").mkdir(parents=True)
     (root / "examples/docs").mkdir(parents=True)
     (root / ".github/workflows").mkdir(parents=True)
+    (root / "scripts").mkdir()
+    (root / "web/src").mkdir(parents=True)
+    (root / "web/node_modules/dependency").mkdir(parents=True)
+    (root / "web/test-results").mkdir()
+    (root / "assets").mkdir()
     (root / "docs").mkdir(parents=True)
     (root / "README.md").write_text("safe")
     (root / ".env.example").write_text("KONG_API_KEY=\n")
     (root / ".github/workflows/ci.yml").write_text("name: CI")
+    (root / "scripts/start-local-preview.ps1").write_text("# public launcher")
+    (root / "web/src/App.tsx").write_text("export default function App() { return null; }")
+    (root / "web/package-lock.json").write_text("{}")
+    (root / "web/node_modules/dependency/index.js").write_text("private dependency cache")
+    (root / "web/test-results/results.json").write_text("local evidence")
+    (root / "web/tsconfig.tsbuildinfo").write_text("generated state")
+    (root / "assets/local-preview.png").write_bytes(b"public screenshot fixture")
     (root / "src/kong/skills/builtin/coding/SKILL.md").write_text("public skill")
     (root / "src/kong/skills/builtin/coding/references/checks.md").write_text("public reference")
     (root / "docs/public.md").write_text("internal even if named public")
@@ -43,6 +55,8 @@ def test_snapshot_excludes_nested_private_files_and_preserves_hashes(tmp_path):
     names = [item["path"] for item in report["manifest"]]
     assert set(names) == {
         ".env.example", ".github/workflows/ci.yml", "README.md",
+        "scripts/start-local-preview.ps1", "web/src/App.tsx", "web/package-lock.json",
+        "assets/local-preview.png",
         "src/kong/skills/builtin/coding/SKILL.md",
         "src/kong/skills/builtin/coding/references/checks.md",
     }

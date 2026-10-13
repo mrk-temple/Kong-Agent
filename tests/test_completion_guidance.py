@@ -12,6 +12,73 @@ from kong.tools.defaults import default_registry
 from kong.workspace import Workspace
 
 
+def test_handoff_contract_guidance_cannot_demand_a_completion_response(tmp_path):
+    from kong.runtime.finalization import completion_guidance
+    workspace = Workspace(tmp_path)
+    (tmp_path / "stage.txt").write_text("current stage", encoding="utf-8")
+    model = ScriptedModel([Act(actions=[Action(name="read_file", arguments={"path": "stage.txt"})]),
+        NeedUserInput(question="Continue the next stage.")])
+    runtime = Runtime.new("read then hand off", model, workspace, default_registry(workspace),
+        completion_contract={"version": 2, "family": "code", "allow_completion": False,
+            "read_before_ask": ["stage.txt"], "required_question": "Continue the next stage."})
+    initial = completion_guidance(runtime.controller.completion_gate, runtime.state, runtime.history)
+    assert initial["additional_tool_required"] and initial["remaining_steps"][0]["kind"] == "act"
+    assert asyncio.run(runtime.run()).status == Status.WAITING_USER
+    after = completion_guidance(runtime.controller.completion_gate, runtime.state, runtime.history)
+    assert after["remaining_steps"] == [{"kind": "ask", "question": "Continue the next stage.",
+        "instruction": "Request the declared stage handoff; completion is forbidden in this stage."}]
+    assert not after["additional_tool_required"] and not after["completion_allowed"]
+    assert len(runtime.history.observations) == 1  # Only the explicit model read ran.
+
+
+def test_code_handoff_without_commands_still_rejects_completion(tmp_path):
+    model = ScriptedModel([FinalResponse(content="Pretend this is complete."), NeedUserInput(question="handoff")])
+    runtime = Runtime.new("handoff only", model, Workspace(tmp_path), default_registry(Workspace(tmp_path)),
+        completion_contract={"version": 2, "family": "code", "allow_completion": False, "required_question": "handoff"})
+    assert asyncio.run(runtime.run()).status == Status.WAITING_USER
+    assert any("completion_rejected" in e.payload for e in runtime.history.events)
+    from kong.completion_contracts import CompletionContract
+    with pytest.raises(ValueError):
+        CompletionContract(version=2, family="code", artifacts=[{"id": "source", "path": "source.py"}])
+
+
+def test_stage_output_is_task_work_before_readback_and_never_implicitly_created(tmp_path):
+    from kong.runtime.finalization import completion_guidance
+    workspace = Workspace(tmp_path)
+    model = ScriptedModel([Act(actions=[
+        Action(name="write_file", arguments={"path": "out.txt", "content": "current output"}),
+        Action(name="read_file", arguments={"path": "out.txt"})]), NeedUserInput(question="handoff")])
+    runtime = Runtime.new("produce the output, then hand off", model, workspace, default_registry(workspace),
+        completion_contract={"version": 2, "family": "data", "allow_completion": False,
+            "read_before_ask": ["out.txt"], "required_question": "handoff"})
+    initial = completion_guidance(runtime.controller.completion_gate, runtime.state, runtime.history)
+    assert initial["absent_output_paths"] == initial["missing_current_reads"] == ["out.txt"]
+    assert initial["remaining_steps"][0]["kind"] == "task_work" and "action" not in initial["remaining_steps"][0]
+    assert not (tmp_path / "out.txt").exists() and not runtime.history.observations
+    assert asyncio.run(runtime.run()).status == Status.WAITING_USER
+    assert runtime.state.pending_question == "handoff" and model.calls == 2
+    assert len(runtime.history.observations) == 2 and all(o.success for o in runtime.history.observations)
+    after = completion_guidance(runtime.controller.completion_gate, runtime.state, runtime.history)
+    assert not after["missing_current_reads"] and not after["absent_output_paths"]
+    assert not after["completion_allowed"]
+
+
+def test_missing_protected_alias_and_invalid_target_never_become_artifact_work(tmp_path):
+    from kong.completion_contracts import CompletionContract
+    from kong.contracts import History
+    from kong.runtime.finalization import handoff_read_prerequisites
+    from kong.runtime.state import create_run_state
+    (tmp_path / "directory").mkdir()
+    state = create_run_state("stage")
+    state.completion_contract = CompletionContract(version=2, family="data", allow_completion=False,
+        protected_paths=["input.txt"], read_before_ask=["./input.txt", "../outside.txt", "directory", "out.txt"])
+    history = History()
+    current = handoff_read_prerequisites(state, history, Workspace(tmp_path))
+    assert current["absent_output_paths"] == ["out.txt"]
+    assert current["unavailable_input_paths"] == ["./input.txt", "../outside.txt", "directory"]
+    assert not (tmp_path / "input.txt").exists() and not history.observations
+
+
 def make_runtime(path, decisions=(), **kwargs):
     (path / "value.py").write_text("value = 7\n", encoding="utf-8")
     (path / "check.py").write_text("from value import value\nassert value == 7\nprint('ok')\n", encoding="utf-8")

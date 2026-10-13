@@ -17,12 +17,14 @@ from uuid import uuid4
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_DIRECTORIES = ("src/kong", "tests", "examples", ".github/workflows")
+PUBLIC_DIRECTORIES = ("src/kong", "tests", "examples", ".github/workflows", "scripts", "web")
 PUBLIC_FILES = (
     "README.md", "ARCHITECTURE.md", "EVALUATION.md", "RECOVERY.md",
     "CHANGELOG.md", "PUBLIC_RELEASE_CHECKLIST.md", ".env.example",
     "pyproject.toml", "uv.lock", "kong.example.toml", ".gitignore",
-    "LICENSE", "NOTICE",
+    "LICENSE", "NOTICE", ".gitattributes", "README_LOCAL_PREVIEW.md",
+    "USER_GUIDE.md", "MEMORY_GUIDE.md", "DEVELOPMENT.md", "RELEASE_NOTES.md",
+    "assets/local-preview.png", "examples/kong_living_memory.example.toml",
 )
 PUBLIC_ROOTS = PUBLIC_DIRECTORIES + PUBLIC_FILES
 PRIVATE_PARTS = {
@@ -30,11 +32,12 @@ PRIVATE_PARTS = {
     ".ruff_cache", ".tox", ".nox", "__pycache__", "build", "dist",
     "kong-test", "api.txt", "kong.local.toml", "docs", "design.md",
     "upgrade_plan.md", "kong_evolution_plan.md", ".ds_store", ".coverage",
+    ".local-preview", "node_modules", "test-results", "playwright-report", ".workspace", ".cache",
 }
 PRIVATE_SUFFIXES = (
     ".pyc", ".pyo", ".egg-info", ".log", ".db", ".sqlite",
     ".sqlite3", ".pem", ".key", ".p12", ".pfx", ".tmp",
-    ".bak", ".orig", ".swp", ".swo", ".whl", ".zip", ".tar.gz",
+    ".bak", ".orig", ".swp", ".swo", ".whl", ".zip", ".tar.gz", ".tsbuildinfo",
 )
 # Keep these patterns local so a copied release candidate can run this script alone.
 CREDENTIAL_PATTERNS = {
@@ -55,7 +58,9 @@ def private_path(path):
         or p.startswith(".env") and normalized != ".env.example"
         or p.endswith(PRIVATE_SUFFIXES)
         or ".log." in p
-        or p.endswith(".toml") and normalized not in {"pyproject.toml", "kong.example.toml"}
+        or p.endswith(".toml") and normalized not in {
+            "pyproject.toml", "kong.example.toml", "examples/kong_living_memory.example.toml"
+        }
         for p in (part.lower() for part in path.parts)
     )
 
@@ -171,7 +176,10 @@ def scan_archive(path, secrets):
 
 def public_directory(path):
     name = path.as_posix()
-    return not private_path(path) and any(name == root or root.startswith(name + "/") or name.startswith(root + "/") for root in PUBLIC_DIRECTORIES)
+    return not private_path(path) and (
+        any(name == root or root.startswith(name + "/") or name.startswith(root + "/") for root in PUBLIC_DIRECTORIES)
+        or any(root.startswith(name + "/") for root in PUBLIC_FILES)
+    )
 
 
 def prepare(root, output, secrets=(), artifacts=()):
@@ -216,7 +224,7 @@ def main():
     args = parser.parse_args()
     output = (args.output or ROOT / "dist" / ("public-candidate-"+uuid4().hex[:12])).resolve()
     if any(output == (ROOT / name).resolve() or output.is_relative_to((ROOT / name).resolve())
-           for name in ("src", "tests", "examples", "docs", ".github")):
+           for name in ("src", "tests", "examples", "docs", ".github", "scripts", "web", "assets")):
         parser.error("Output must be outside public source roots")
     secrets = set()
     try:

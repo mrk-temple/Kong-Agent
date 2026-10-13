@@ -1,10 +1,26 @@
-# RECOVERY — Kong-Agent 0.4.0rc5 的持久化与恢复
+# RECOVERY — Kong-Agent 0.5.0rc1 的持久化与恢复
 
 对照 `src/kong/storage.py`、`src/kong/runtime/loop.py`、`src/kong/cli.py` 与 `src/kong/reporting.py`。设计原则：**结果未知的动作永不自动重放**，恢复先把状态交还人，而不是猜。
+
+## Local Preview 的恢复与数据
+
+本地 GUI / CUI / TUI 的 Application Service 保存命令回执、事件水位和 Runtime 快照。重启后已知动作的运行暂停，需显式 resume；未知动作仍先检查并 resolve。SSE 重连读取状态，不重发旧 POST 或自动重放写入。
+
+默认数据目录为项目 `.local-preview/`，包含 `core.db`、`application.db`、`threads.db`、Run 数据和 `workspace/`。启动脚本可用 `-DataRoot` 指定位置，临时文件与缓存跟随这个目录。一个数据目录只运行一个服务进程。
+
+关闭全部关联服务后完整复制数据目录进行备份；当前没有完成跨路径 workspace 迁移验收。Memory Core 的遗忘范围不包括 Runtime 历史、外发模型请求、导出和备份。具体入口见 [用户指南](USER_GUIDE.md) 和 [记忆指南](MEMORY_GUIDE.md)。
+
+独立 Memory Core 绑定的 Run 使用后续快照格式保存 Profile、作用域和删除时代等身份；恢复时重新验证当前授权，不从旧快照恢复已经失效的权限。下面保留 Runtime 各版本的持久化规则。
 
 RC5 沿用 RC3 的增量快照字段，不重置累计预算。旧快照缺少 `completion_scope` 时采用默认声明验收；运行中的弱条件任务不能靠恢复获得机械完成权限。新快照保留调用方明确选择的范围，恢复入口不能覆盖它。旧 `progress_count` 中的新输出积分保留为活动计数并在检查点消耗，不能直接支持新续租；声明来源范围和已验证条件积分随新快照保存。同步核验缓存不保存，不跨工具、模型等待或恢复使用。
 
 ## 持久化点
+
+V0.5 的默认连续性策略仍写 schema 4，不添加空策略字段；读入 schema 1–4 时保留原有默认行为。显式 M0/M2 或其他非默认 ContinuityPolicy 写 schema 5 和完整 `continuity_policy`。schema 5 缺策略、旧 schema 附带新策略、恢复时提供冲突的模式或 ContextEngine 都拒绝；新进程采用已保存策略，不把 M0 恢复成 M1。上下文预算仍由当前明确的模型配置提供，权限仍须本次启动重新声明。
+
+schema 5 不能由旧客户端读取。升级或实验前备份 RunStore 和 `.kong/context.db`；要回退到旧程序，使用保留的旧格式副本，先核对实际产物和副作用，不改写版本号伪造迁移。不把未知效果自动重放，也不因切换代码恢复旧批准或预算。
+
+技能生命周期保存在独立 `.kong/skill-lifecycle.json`（schema 1），宿主变更持有文件锁并原子写入。正文及引用资源绑定同一版本哈希；历史已加载材料仍固定为原版本，改变磁盘文件不能拼入同一 Run。停用或删除受管理版本的启用记录后，下一次上下文编译撤下其材料并说明原因。选中已验证旧身份只改选择记录，宿主仍须恢复对应旧文件；外部写入不能被该记录撤销。
 
 | 时机 | 内容 |
 |---|---|

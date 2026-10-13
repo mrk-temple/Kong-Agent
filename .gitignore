@@ -11,3 +11,31 @@ api.txt
 kong-test/
 build/
 *.pyc
+
+# Local Phase 1 evidence and synthetic runtime data; never package as source.
+docs/local-preview-0.0.0/evidence/
+
+# Local application state and frontend dependency cache
+.local-preview/
+node_modules/
+web/test-results/
+web/playwright-report/
+
+# Generated frontend state and machine-local caches
+*.tsbuildinfo
+.ruff_cache/
+.mypy_cache/
+.workspace/
+.cache/
+.coverage
+htmlcov/
+*.db
+*.sqlite*
+*.log
+
+# Keep development notes and raw evaluation evidence locally.
+/docs/
+/DESIGN.md
+/UPGRADE_PLAN.md
+/CLAUDE_HANDOFF.md
+/KONG_LOCAL_PREVIEW_0.0.0_RELEASE_REPORT.md

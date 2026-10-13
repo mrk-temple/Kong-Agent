@@ -1,0 +1,31 @@
+# Synthetic evaluation only. Credentials remain in the environment.
+default_profile = "mimo"
+
+[profiles.mimo]
+base_url = "https://api.xiaomimimo.com/v1"
+model = "mimo-v2.6-flash"
+api_key_env = "MIMO_API_KEY"
+json_mode = true
+thinking_mode = "disabled"
+timeout = 90
+max_tokens = 4096
+context_window_tokens = 65536
+
+[profiles.mimo_compare]
+base_url = "https://api.xiaomimimo.com/v1"
+model = "mimo-v2.5"
+api_key_env = "MIMO_API_KEY"
+json_mode = true
+thinking_mode = "disabled"
+timeout = 90
+max_tokens = 4096
+context_window_tokens = 65536
+
+[profiles.local]
+base_url = "http://127.0.0.1:1234/v1"
+model = "your-loaded-model-id"
+api_key_env = "KONG_LOCAL_API_KEY"
+json_mode = true
+timeout = 90
+max_tokens = 2048
+context_window_tokens = 32768

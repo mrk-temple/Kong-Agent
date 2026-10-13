@@ -10,9 +10,15 @@ import sys
 import tempfile
 
 
-def main(wheel):
+def main(wheel, output=None):
     wheel = wheel.resolve(strict=True)
-    folder = Path(tempfile.mkdtemp(prefix="kong-release-install-"))
+    if output is None:
+        folder = Path(tempfile.mkdtemp(prefix="kong-release-install-"))
+    else:
+        folder = output.resolve()
+        if folder.is_relative_to(Path(__file__).resolve().parents[1]):
+            raise ValueError("Isolated install output must be outside the source checkout")
+        folder.mkdir(parents=True, exist_ok=False)
     workspace = folder/"workspace"
     workspace.mkdir()
     env = folder/"venv"
@@ -36,7 +42,11 @@ def main(wheel):
     run("import-origin",[python,"-I","-c","import kong,sys; from pathlib import Path; assert Path(kong.__file__).is_relative_to(Path(sys.prefix)); print(kong.__file__)"])
     run("base-demo",[python,"-I","-m","kong","--global-memory-db",folder/"global.db","demo","--auto-approve"])
     run("summary-artifact",[python,"-I","-c","import json; from pathlib import Path; r=json.loads(next(Path('.kong/reports').glob('*.json')).read_text(encoding='utf-8')); assert r['status']=='completed'; assert all(c['verified'] for c in r['criteria']); print('summary verified')"])
-    run("extras-install",["uv","pip","install","--python",python,str(wheel)+"[skills,integrations]"])
+    run("extras-install",["uv","pip","install","--python",python,str(wheel)+"[local,tui,skills,integrations]"])
+    run("local-status",[python,"-I","-m","kong","local","status","--data-root",folder/"local-data"])
+    run("bundled-local-ui",[python,"-I","-c",
+        "import json; from importlib.resources import files; p=files('kong.local_api'); s=p.joinpath('static/index.html').read_text(encoding='utf-8'); assert '/assets/' in s; assert list(p.joinpath('static/assets').iterdir()); assert json.loads(p.joinpath('source_identity.json').read_text(encoding='utf-8'))['file_count']>0; print('installed local UI and identity verified')"])
+    run("tui-import",[python,"-I","-c","from kong.tui.app import KongApp; print('installed TUI import verified')"])
     (workspace/"model.toml").write_text('default_profile="local"\n[profiles.local]\nbase_url="http://127.0.0.1:9/v1"\nmodel="offline-check"\n',encoding="utf-8")
     command = [python,"-I","-m","kong","--config","model.toml","--allow-process","--allow-browser","--allow-mcp"]
     if sys.platform == "win32":
@@ -50,4 +60,6 @@ def main(wheel):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("wheel",type=Path)
-    main(parser.parse_args().wheel)
+    parser.add_argument("--output", type=Path, help="New isolated directory outside the source checkout")
+    args = parser.parse_args()
+    main(args.wheel, args.output)

@@ -15,6 +15,7 @@ from kong.continuity.retrieval import scope_matches
 from kong.demo import demo_model
 from kong.models.compatible import CompatibleModel
 from kong.runtime.loop import Runtime
+from kong.application.runtime_factory import create_runtime, restore_runtime
 from kong.storage import RunStore
 from kong.tools.defaults import default_registry
 from kong.workspace import Workspace
@@ -25,7 +26,8 @@ HELP = """命令：
   /approve <修订号>      批准所展示的这一版计划
   /discuss <意见>        讨论计划；不会执行工具
   /edit <JSON文件路径>   用本地 Plan JSON 修订计划；仍需重新批准
-  /answer <回答>        回答待处理问题
+  /answer <回答>        回答待处理问题；Memory Core 变化后需提供完整新目标
+  /fresh <完整新目标>   Memory Core 变化后创建同 Thread 的新 Run
   /resolve <实际情况>    确认中断动作的实际情况，允许继续检查
   /reject               拒绝并停止任务
   /resume               恢复被用户中断的任务（不重置预算）
@@ -127,7 +129,7 @@ def print_status(runtime: Runtime) -> None:
         print("恢复提示：历史交互句柄不可用，需要检查后重新建立：" + json.dumps(warning, ensure_ascii=False))
     if runtime.store:
         print("任务摘要：" + str(runtime.store.report_path(state.run_id)))
-    if runtime.context_engine.store:
+    if runtime.context_engine.store and runtime.context_engine.policy.memory_mode != "M0":
         pending = [i for i in runtime.context_engine.store.state(runtime.thread.thread_id).items if i.status == "candidate"]
         for entry in pending:
             print(f"待确认记忆 {entry.id}: {entry.content}\n  /memory-confirm {entry.id}")
@@ -148,6 +150,12 @@ def print_context(runtime: Runtime) -> None:
 
 def print_memory(runtime: Runtime) -> None:
     engine = runtime.context_engine
+    if engine.memory_bridge is not None:
+        print("已启用独立 Memory Core；使用 kong memory-core 管理 Profile 和记忆瓶。旧记忆路径已关闭。")
+        return
+    if engine.policy.memory_mode == "M0":
+        print("本 Run 已关闭派生记忆；原始历史仍可回读。")
+        return
     if not engine.store:
         print("当前未启用持久记忆。")
         return
@@ -166,6 +174,10 @@ async def context_command(runtime: Runtime, line: str) -> bool:
     if command == "/skills":
         print_skills(runtime.registry.get("skill_list").catalog)
     elif command == "/context":
+        if runtime.context_engine.memory_bridge is not None and runtime.context_engine.last_packet is not None:
+            if not await runtime.context_engine.validate_packet(runtime.context_engine.last_packet):
+                print("旧上下文已失效；下一次生成会重新读取授权视图。")
+                return True
         print_context(runtime)
     elif command == "/memory":
         print_memory(runtime)
@@ -189,6 +201,11 @@ async def drive(runtime: Runtime, interactive: bool, reader=None) -> int:
     if interactive and reader is None:
         reader = TerminalInput()
     while True:
+        if runtime.state.status in {Status.RUNNING, Status.WAITING_USER} and await runtime.memory_access_changed():
+            runtime.state.status = Status.WAITING_USER
+            runtime.state.pending_question = "Memory Core 已变化。请完整重述新目标，以新 Run 继续。"
+            runtime.state.stop_reason = "memory_access_changed"
+            runtime.save()
         if interactive:
             await run_with_input(runtime, reader)
         else:
@@ -213,6 +230,12 @@ async def drive(runtime: Runtime, interactive: bool, reader=None) -> int:
                 return 0
             if await context_command(runtime, line):
                 continue
+            if (command in {"/answer", "/discuss", "/fresh"} or line and not line.startswith("/")) and await runtime.memory_access_changed():
+                fresh_goal = argument if command.startswith("/") else line
+                fresh = await runtime.start_fresh_after_memory_change(fresh_goal)
+                print(f"Memory Core 已变化；已创建新 Run {fresh.state.run_id}。")
+                with fresh.store.lock(fresh.state.run_id):
+                    return await drive(fresh, interactive, reader)
             if command == "/help":
                 print(HELP)
             elif command == "/plan":
@@ -280,7 +303,17 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--global-memory-db", type=Path, default=Path.home() / ".kong" / "memory.db",
                         help="跨工作区的 GLOBAL 记忆数据库；工作区记忆仍在 .kong/context.db")
     result.add_argument("--project-id", help="PROJECT 记忆隔离标识；未指定时不读取 PROJECT 记忆")
+    result.add_argument("--memory-mode", choices=["M0", "M1", "M2"], default=None,
+                        help="M0 关闭派生记忆，M1 保留原行为，M2 实验相关性过滤；恢复沿用快照，不可切换")
     commands = result.add_subparsers(dest="command")
+    from kong.application.memory_cli import add_parser
+    add_parser(commands)
+    from kong.application.local_cli import add_parser as add_local_parser
+    add_local_parser(commands)
+    result.add_argument("--memory-core-db", type=Path, help="独立 Memory Core 数据库；与旧 Memory 路径互斥")
+    result.add_argument("--kong-profile", help="持久 Kong Profile；不同于 --profile 模型配置")
+    result.add_argument("--memory-owner", default="local-owner", help="本地可信宿主的 owner 标识")
+    result.add_argument("--capture-memory", action="store_true", default=None, help="授权本 Run 的有限交互暂存；不自动写入长期记忆")
     doctor = commands.add_parser("doctor", help="统一检查配置、依赖和本地运行环境")
     doctor.add_argument("--online", action="store_true", help="显式调用模型、启用的搜索和 MCP 工具发现，可能计费")
     doctor.add_argument("--json", action="store_true")
@@ -354,6 +387,22 @@ async def async_main(args) -> int:
 
 
 async def _async_main(args, default_registry) -> int:
+    from kong.application.memory_cli import host_authority, run
+    from kong.application.memory_bridge import MemoryBridge
+    if args.command == "memory-core":
+        return run(args)
+    bridge = None
+    if args.memory_core_db or args.kong_profile:
+        bridge = MemoryBridge(args.memory_core_db, host_authority(args))
+    args._memory_bridge = bridge
+    try:
+        return await _runtime_main(args, default_registry)
+    finally:
+        if bridge is not None:
+            await bridge.aclose()
+
+
+async def _runtime_main(args, default_registry) -> int:
     completion_contract = None
     if args.command == "run":
         from kong.completion_contracts import CompletionContract, contract_for_task_family
@@ -374,7 +423,10 @@ async def _async_main(args, default_registry) -> int:
         return runtime
     permissions = load_permissions(args.permissions)
     runtime_options = dict(permissions=permissions, read_concurrency=args.read_concurrency,
-                           model_retry_limit=args.model_retries)
+                           model_retry_limit=args.model_retries, memory_mode=args.memory_mode)
+    if args._memory_bridge is not None:
+        runtime_options["memory_bridge"] = args._memory_bridge
+        runtime_options["memory_capture"] = args.capture_memory
     def events(kind, data):
         if args.events_json:
             print(json.dumps(data["event"], ensure_ascii=False), flush=True)
@@ -437,15 +489,19 @@ async def _async_main(args, default_registry) -> int:
         return 2 if args.check and (data["diagnostics"] or any(s["status"] == "blocked" for s in data["skills"])) else 0
     store = RunStore(workspace.root / ".kong" / "runs")
     if args.command == "context":
-        store.load(args.run_id)  # Validate ID and original Run existence.
+        snapshot = store.load(args.run_id)  # Validate ID and original Run existence.
+        if snapshot.memory_binding is not None:
+            print("Memory Core 上下文不保存可复用正文；请在当前授权会话使用 /context。旧上下文已隔离。")
+            return 0
         packet = MemoryStore(workspace.root / ".kong" / "context.db").packet(args.run_id)
         print(packet.model_dump_json(indent=2) if packet else "此 Run 尚无已记录的模型上下文。")
         return 0
     if args.command == "memory":
         from kong.models.fake import ScriptedModel
         with store.lock(args.run_id):
-            runtime = Runtime.restore(store.load(args.run_id), ScriptedModel([]), workspace, default_registry(workspace),
-                                      store=store, memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id)
+            runtime = restore_runtime(store.load(args.run_id), ScriptedModel([]), workspace, default_registry(workspace),
+                                      store=store, memory_store=None if args._memory_bridge else MemoryStore(args.global_memory_db),
+                                      memory_bridge=args._memory_bridge, project_id=args.project_id)
             if args.action != "list":
                 await runtime.memory_command(args.action, item_id=args.item_id, text=args.text,
                                              kind=args.kind, key=args.key, scope=args.scope)
@@ -475,7 +531,7 @@ async def _async_main(args, default_registry) -> int:
         demo_path = workspace.root / ".kong" / "demos" / uuid4().hex
         demo_path.mkdir(parents=True)
         demo_workspace = Workspace(demo_path)
-        runtime = Runtime.new("创建一份 Kong V0.1 介绍文件", demo_model(), demo_workspace,
+        runtime = create_runtime("创建一份 Kong V0.1 介绍文件", demo_model(), demo_workspace,
                               default_registry(demo_workspace), Mode.PLAN, store=store, on_event=events, driver="demo", **runtime_options)
         configure(runtime)
         print(f"离线演示工作区：{demo_path}")
@@ -497,8 +553,8 @@ async def _async_main(args, default_registry) -> int:
                 model = demo_model(snapshot.state.turn_count)
             else:
                 model = load_model()
-            runtime = Runtime.restore(snapshot, model, workspace, default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web)), store=store, on_event=events,
-                                      memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
+            runtime = restore_runtime(snapshot, model, workspace, default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web)), store=store, on_event=events,
+                                      memory_store=None if args._memory_bridge else MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
             configure(runtime)
             if runtime.state.status == Status.STOPPED and runtime.state.stop_reason == "user_interrupted" and not runtime.pending_action_id:
                 runtime.human("resume")
@@ -506,9 +562,9 @@ async def _async_main(args, default_registry) -> int:
     model = load_model()
     registry = default_registry(workspace, allow_process=args.allow_process, skill_roots=args.skill_dir, web_config=load_web_config(args.config, args.web))
     if args.command == "run":
-        runtime = Runtime.new(args.goal, model, workspace, registry, Mode(args.mode), store=store,
+        runtime = create_runtime(args.goal, model, workspace, registry, Mode(args.mode), store=store,
                               thread_id=args.thread, on_event=events, progress_paths=args.progress_path,
-                              memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
+                              memory_store=None if args._memory_bridge else MemoryStore(args.global_memory_db), project_id=args.project_id, **runtime_options)
         configure(runtime)
         runtime.state.completion_scope = args.completion_scope
         if args.criteria:
@@ -522,7 +578,8 @@ async def _async_main(args, default_registry) -> int:
     # One terminal conversation is a Thread; each goal keeps its own Run budget.
     thread_id = None
     runtime = None
-    print("Kong V0.3 · AUTO · 输入目标开始，/skills 查看技能，/context 查看上下文，/quit 退出。")
+    from kong import __version__
+    print(f"Kong {__version__} · AUTO · 输入目标开始，/skills 查看技能，/context 查看上下文，/quit 退出。")
     while True:
         try:
             goal = (await get_reader().get("\n你 > ")).strip()
@@ -543,8 +600,8 @@ async def _async_main(args, default_registry) -> int:
             except (ValueError, OSError):
                 print("命令未执行：检查记忆 ID、kind/key/scope 或当前 Thread。")
             continue
-        runtime = Runtime.new(goal, model, workspace, registry, store=store, on_event=events,
-                              thread_id=thread_id, memory_store=MemoryStore(args.global_memory_db), project_id=args.project_id,
+        runtime = create_runtime(goal, model, workspace, registry, store=store, on_event=events,
+                              thread_id=thread_id, memory_store=None if args._memory_bridge else MemoryStore(args.global_memory_db), project_id=args.project_id,
                               **runtime_options)
         configure(runtime)
         thread_id = runtime.thread.thread_id
@@ -559,7 +616,11 @@ def main() -> None:
             stream.reconfigure(encoding="utf-8")
     args = parser().parse_args()
     try:
-        code = asyncio.run(async_main(args))
+        if args.command == "local":
+            from kong.application.local_cli import launch
+            code = launch(args)
+        else:
+            code = asyncio.run(async_main(args))
     except KeyboardInterrupt:
         print("\n任务已中断；已开始的任务可在 kong runs 中查找。")
         code = 130
