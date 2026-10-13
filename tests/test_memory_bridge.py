@@ -542,18 +542,50 @@ def test_io_timeout_has_no_unbounded_queue_or_stale_result(tmp_path, monkeypatch
     class Slow(MemoryService):
         def get_access_state(self, auth):
             started.set()
-            release.wait(1)
+            release.wait(5)
             return super().get_access_state(auth)
     monkeypatch.setattr("kong.application.memory_bridge.MemoryService", Slow)
     async def scenario():
         async with MemoryBridge(db, owner(), timeout=0.01) as bridge:
-            before = time.perf_counter()
-            assert await bridge.get_access_state() is None
-            assert started.is_set()
-            for _ in range(20):
+            # Start real worker I/O before measuring its deadline; constructing
+            # SQLite and scheduling a new thread need not finish within 10 ms.
+            submit = bridge._pool.submit
+            pending = submit(bridge._invoke, "get_access_state", ())
+            assert await asyncio.to_thread(started.wait, 5)
+            submissions = 0
+
+            def started_io(operation, arguments):
+                nonlocal submissions
+                assert operation == bridge._invoke and arguments == ("get_access_state", ())
+                submissions += 1
+                return pending
+
+            # ThreadPoolExecutor.submit receives the callable and its arguments.
+            def submit_pending(operation, *arguments):
+                return started_io(operation, arguments)
+
+            monkeypatch.setattr(bridge._pool, "submit", submit_pending)
+            try:
+                before = time.perf_counter()
                 assert await bridge.get_access_state() is None
-            assert time.perf_counter() - before < 0.5
-            release.set()
+                for _ in range(20):
+                    assert await bridge.get_access_state() is None
+                assert time.perf_counter() - before < 0.5
+                assert submissions == 1
+            finally:
+                release.set()
+            assert await asyncio.wrap_future(pending) is not None
+            monkeypatch.setattr(bridge._pool, "submit", submit)
+            revoked = threading.Event()
+
+            def unavailable(*_):
+                revoked.set()
+                raise PermissionDenied("fixture access revoked after late I/O")
+
+            monkeypatch.setattr(bridge, "_invoke", unavailable)
+            bridge.timeout = 5
+            assert await bridge.get_access_state() is None
+            assert revoked.is_set()  # The previous late success was not reused.
     asyncio.run(scenario())
 
 
