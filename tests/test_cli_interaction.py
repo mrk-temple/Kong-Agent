@@ -101,4 +101,6 @@ def test_offline_comparison_has_real_outputs_and_reproducible_record(tmp_path):
     assert process.returncode == 0, process.stdout + process.stderr
     report = json.loads(process.stdout)
     assert report["identical_results"] and report["all_passed"]
+    assert report["concurrency_observed"]
+    assert [row["max_active_reads"] for row in report["reads"]] == [1, 3]
     assert len(report["reads"][1]["results"]) == 6

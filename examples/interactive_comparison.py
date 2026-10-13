@@ -8,6 +8,7 @@ import asyncio
 import json
 from pathlib import Path
 import sys
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,9 +24,25 @@ from kong.workspace import Workspace
 
 
 class DelayedRead(ReadFileTool):
+    def __init__(self, workspace, expected_concurrency=1):
+        super().__init__(workspace)
+        self._active_lock = threading.Lock()
+        self._active = 0
+        self.max_active_reads = 0
+        self._cohort = threading.Barrier(expected_concurrency, timeout=5)
+
     def _run(self, **kwargs):
-        time.sleep(0.1)
-        return super()._run(**kwargs)
+        with self._active_lock:
+            self._active += 1
+            self.max_active_reads = max(self.max_active_reads, self._active)
+        try:
+            # Confirm each configured batch entered real worker I/O together.
+            self._cohort.wait()
+            time.sleep(0.1)
+            return super()._run(**kwargs)
+        finally:
+            with self._active_lock:
+                self._active -= 1
 
 
 async def compare(destination):
@@ -39,7 +56,8 @@ async def compare(destination):
             (root / name).write_text(f"unseen value {i}", encoding="utf-8")
         workspace = Workspace(root)
         registry = ToolRegistry()
-        registry.register(DelayedRead(workspace))
+        read_tool = DelayedRead(workspace, expected_concurrency=concurrency)
+        registry.register(read_tool)
         model = ScriptedModel([Act(actions=[Action(name="read_file", arguments={"path": n}) for n in names]),
                                NeedUserInput(question="comparison complete")])
         runtime = Runtime.new("Read six independent files", model, workspace, registry,
@@ -47,6 +65,7 @@ async def compare(destination):
         started = time.perf_counter()
         await runtime.run()
         rows.append({"concurrency": concurrency, "seconds": round(time.perf_counter() - started, 4),
+            "max_active_reads": read_tool.max_active_reads,
             "metrics": runtime.metrics.model_dump(mode="json"),
             "results": [{"id": o.action_id, "path": o.action.arguments["path"], "output": o.output, "success": o.success}
                         for o in runtime.history.observations], "run_id": runtime.state.run_id,
@@ -70,11 +89,18 @@ async def compare(destination):
     same = rows[0]["results"] == rows[1]["results"]
     output = {"schema": 1, "fixture_io_delay_seconds": 0.1, "reads": rows,
               "identical_results": same, "speedup": round(rows[0]["seconds"] / rows[1]["seconds"], 3),
+              "concurrency_observed": [row["max_active_reads"] for row in rows] == [1, 3],
               "input_revoked_tail": len(runtime.history.observations) == 1,
               "input_in_next_context": "Stop the old batch" in json.dumps(model.contexts[-1].messages),
               "interactive_status": runtime.state.status.value,
               "scope": "Controlled fixture with fixed I/O delay; not live model throughput or general disk performance"}
-    output["all_passed"] = same and output["speedup"] > 1.5 and output["input_revoked_tail"] and output["input_in_next_context"] and runtime.state.status == Status.WAITING_USER
+    # End-to-end speedup includes host scheduling and snapshot I/O. Record it;
+    # validate actual overlap, outputs and input boundaries independently.
+    output["all_passed"] = (same and output["concurrency_observed"]
+        and all(len(row["results"]) == 6 and all(result["success"] for result in row["results"])
+                and row["status"] == Status.WAITING_USER.value for row in rows)
+        and output["input_revoked_tail"] and output["input_in_next_context"]
+        and runtime.state.status == Status.WAITING_USER)
     (destination / "comparison.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     return output
 
