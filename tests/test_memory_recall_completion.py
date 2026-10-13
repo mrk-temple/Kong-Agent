@@ -1,5 +1,6 @@
 """Replay of observed recall failure patterns; simulated decisions, no live LLM."""
 import asyncio
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 
@@ -23,6 +24,16 @@ FIXTURE = json.loads((Path(__file__).parent / "fixtures/memory_recall_holdout_v1
 PRIVATE = "PRIVATE_EPISODE_997"
 
 
+@asynccontextmanager
+async def initialized_bridge(database):
+    # These cases measure recall policy under explicitly selected conditions,
+    # rather than the host's cold SQLite startup latency. Unavailable retrieval
+    # is still injected by its case; production deadlines remain unchanged.
+    async with MemoryBridge(database, owner(), timeout=5) as bridge:
+        await bridge.get_access_state()
+        yield bridge
+
+
 def test_available_memory_feedback_supports_recall_without_execution_authority(tmp_path):
     database = setup(tmp_path, "unknown")
     text = "Cedar recovery finished with rollback and badge VERIFIED_23."
@@ -35,7 +46,7 @@ def test_available_memory_feedback_supports_recall_without_execution_authority(t
         core.activate_bottle(owner(), "public", expected_revision=bottle.revision, command_id="activate")
 
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             model = ScriptedModel([FinalResponse(content="Cedar used rollback, with badge VERIFIED_23.")])
             run = make_run(tmp_path, bridge, model, goal="Recall Cedar recovery and its badge.")
             await run.run()
@@ -53,7 +64,7 @@ def test_available_memory_feedback_supports_recall_without_execution_authority(t
 def test_no_new_read_feedback_recommends_clarification_without_claiming_tool_proof(tmp_path):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge)
             model = ScriptedModel([query(run.state.run_id, 0), NeedUserInput(question="Which event do you mean?")])
             run.model = model
@@ -101,7 +112,7 @@ def query(run_id, event_index=None, **extra):
 def test_twenty_missing_or_unusable_cases_end_after_two_no_new_reads(tmp_path, case):
     database = setup(tmp_path, case["condition"])
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             if case["condition"] == "unavailable":
                 async def unavailable(*args, **kwargs):
                     return None
@@ -128,7 +139,7 @@ def test_twenty_missing_or_unusable_cases_end_after_two_no_new_reads(tmp_path, c
 def test_multi_action_batch_cannot_dispatch_third_query_or_following_write(tmp_path):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge)
             action = query(run.state.run_id).actions[0]
             run.model = ScriptedModel([Act(actions=[action, action, action, Action(name="write_file", arguments={"path":"must-not-exist.txt","content":"bad"})])])
@@ -154,7 +165,7 @@ def test_supplement_reaches_twenty_unknown_inactive_forgotten_cases(tmp_path, co
 def test_true_ambiguity_can_clarify_without_a_history_query(tmp_path, text):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge, ScriptedModel([NeedUserInput(question="Which project or event do you mean?")]), goal=text)
             await run.run()
             assert run.context_engine.last_packet.memory_query_status == "ambiguous"
@@ -165,7 +176,7 @@ def test_true_ambiguity_can_clarify_without_a_history_query(tmp_path, text):
 def test_unmapped_and_revoked_sources_have_identical_nonrevealing_results(tmp_path):
     database = setup(tmp_path, "inactive")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             prior = make_run(tmp_path, bridge, ScriptedModel([FinalResponse(content="ok")]), goal=PRIVATE)
             await prior.run()
             with MemoryService(database) as core:
@@ -182,7 +193,7 @@ def test_unmapped_and_revoked_sources_have_identical_nonrevealing_results(tmp_pa
 def test_legitimate_new_source_then_repeated_reads_new_pagination_and_human_reset(tmp_path):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             prior = make_run(tmp_path, bridge, ScriptedModel([FinalResponse(content="ok")]), goal="An explicit past account " + "details " * 20)
             await prior.run()
             run = make_run(tmp_path, bridge, thread_id=prior.thread.thread_id)
@@ -204,7 +215,7 @@ def test_legitimate_new_source_then_repeated_reads_new_pagination_and_human_rese
 def test_no_new_count_survives_restart_and_completion_evidence_is_still_required(tmp_path):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge)
             run.model = ScriptedModel([query(run.state.run_id), query(run.state.run_id, 0), query(run.state.run_id)])
             await run.run()
@@ -219,7 +230,7 @@ def test_new_authorized_task_read_can_be_recalled_after_two_question_echoes(tmp_
     database = setup(tmp_path, "unknown")
     (tmp_path / "source.txt").write_text("AUTHORIZED_TASK_DATA " + "x" * 5000, encoding="utf-8")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge)
             class NewEvidenceModel:
                 calls = 0
@@ -245,7 +256,7 @@ def test_new_authorized_task_read_can_be_recalled_after_two_question_echoes(tmp_
 def test_read_before_ask_contract_is_not_waived_by_recall_limit(tmp_path):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge, completion_contract=CompletionContract(family="data", allow_completion=False, read_before_ask=["required.txt"]))
             run.model = ScriptedModel([query(run.state.run_id), query(run.state.run_id, 0), query(run.state.run_id)])
             await run.run()
@@ -259,7 +270,7 @@ def test_read_before_ask_contract_is_not_waived_by_recall_limit(tmp_path):
 def test_controller_and_tool_permissions_remain_authoritative(tmp_path, mode):
     database = setup(tmp_path, "unknown")
     async def execute():
-        async with MemoryBridge(database, owner()) as bridge:
+        async with initialized_bridge(database) as bridge:
             run = make_run(tmp_path, bridge, mode=mode, permissions=PermissionPolicy(allowed_tools=[]))
             run.model = ScriptedModel([query(run.state.run_id), query(run.state.run_id), NeedUserInput(question="No information; clarify?")])
             await run.run()
