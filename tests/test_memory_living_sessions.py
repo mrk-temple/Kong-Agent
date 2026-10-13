@@ -43,7 +43,8 @@ class AlternateContextReader(ContextReader):
 
 
 @pytest.mark.parametrize("accept_style", [True, False])
-def test_seven_day_formation_reflection_and_model_asset_portability(tmp_path, monkeypatch, accept_style):
+@pytest.mark.parametrize("interrupt_delivery", [False, True])
+def test_seven_day_formation_reflection_and_model_asset_portability(tmp_path, monkeypatch, accept_style, interrupt_delivery):
     database = tmp_path / "synthetic-memory.db"
     instant = datetime(2026, 10, 1, tzinfo=timezone.utc)
     def clock():
@@ -52,6 +53,15 @@ def test_seven_day_formation_reflection_and_model_asset_portability(tmp_path, mo
         capabilities=frozenset(Capability))
     # The existing worker still constructs/uses/closes its connection on the same thread.
     monkeypatch.setattr("kong.application.memory_bridge.MemoryService", lambda path: MemoryService(path, clock=clock))
+    if interrupt_delivery:
+        observe = MemoryBridge.observe_snapshot
+
+        async def interrupt_commit(self, snapshot, *, max_seconds=0.1):
+            if max_seconds <= 0.1:
+                return False  # Simulate a missed bounded commit, without a sleep.
+            return await observe(self, snapshot, max_seconds=max_seconds)
+
+        monkeypatch.setattr(MemoryBridge, "observe_snapshot", interrupt_commit)
     packets, sessions = [], []
     identity = Identity(name="Kong", personality=("steady",), principles=("respect autonomy",), communication_style="calm")
 
@@ -59,7 +69,8 @@ def test_seven_day_formation_reflection_and_model_asset_portability(tmp_path, mo
         return auth.model_copy(update={"input_id": command})
 
     async def session(text, *, capture=False, model_type=ContextReader, thread_id=None):
-        async with MemoryBridge(database, auth) as bridge:
+        async with MemoryBridge(database, auth, timeout=5) as bridge:
+            assert await bridge.get_access_state() is not None
             assert bridge.authority.capabilities == frozenset({Capability.READ, Capability.OBSERVE})
             (tmp_path / "workspace").mkdir(exist_ok=True)
             workspace = Workspace(tmp_path / "workspace")
@@ -67,10 +78,18 @@ def test_seven_day_formation_reflection_and_model_asset_portability(tmp_path, mo
             run = Runtime.new(text, model, workspace, default_registry(workspace), store=RunStore(workspace.root / ".kong/runs"),
                 memory_bridge=bridge, memory_capture=capture, thread_id=thread_id)
             await run.run()
-            packets.append(model.packet)
-            sessions.append({"run_id": run.state.run_id, "thread_id": run.thread.thread_id, "day": instant.date().isoformat(),
-                "adapter": model_type.__name__, "response_simulated": run.state.final_output})
-            return run
+            snapshot = run.store.load(run.state.run_id)
+            assert snapshot.memory_binding["capture"] == ("on" if capture else "off")
+            assert snapshot.memory_binding["access"] is not None
+        # Closing drains any late worker. Explicitly finish observation delivery
+        # from the persisted original consent; this never resumes an Agent Loop.
+        async with MemoryBridge(database, auth, timeout=5) as recovery:
+            assert await recovery.get_access_state() is not None
+            assert await recovery.observe_snapshot(snapshot, max_seconds=5)
+        packets.append(model.packet)
+        sessions.append({"run_id": run.state.run_id, "thread_id": run.thread.thread_id, "day": instant.date().isoformat(),
+            "adapter": model_type.__name__, "response_simulated": run.state.final_output})
+        return run
 
     with MemoryService(database, clock=clock) as core:
         core.create_profile(auth, command_id="born-empty")
@@ -191,7 +210,8 @@ def test_seven_day_formation_reflection_and_model_asset_portability(tmp_path, mo
     assert "EPISODE_LIVING_23" not in json.dumps(packets[-1].messages)
     assert all("PRIVATE_INACTIVE_631" not in json.dumps(p.messages) for p in packets)
     result = {"scenario": "seven-logical-days-v1", "data": "synthetic", "live_model_evaluation": False,
-        "behavior_source": "simulated", "accept_style": accept_style, "sessions": sessions,
+        "behavior_source": "simulated", "accept_style": accept_style,
+        "commit_delivery_interrupted": interrupt_delivery, "sessions": sessions,
         "engineering_assertions": {"empty_start": True, "grounded_episode": True, "episode_extension": True,
             "corrected_fact": True, "identity_stable": True, "relationship_review": True,
             "assets_after_adapter_switch": True, "bottle_isolation": True, "forget_context_block": True, "approved_rule_injection": True},
@@ -208,7 +228,8 @@ def test_approved_relationship_uses_shared_context_path_in_all_runtime_modes(tmp
         core.create_profile(auth, command_id="profile")
         core.set_relationship(auth, relationship, expected_revision=0, approved_digest=relationship_digest(relationship), command_id="rules")
     async def build():
-        async with MemoryBridge(database, auth) as bridge:
+        async with MemoryBridge(database, auth, timeout=5) as bridge:
+            assert await bridge.get_access_state() is not None
             workspace = Workspace(tmp_path)
             run = Runtime.new("current task", ContextReader(), workspace, default_registry(workspace), mode,
                 store=RunStore(tmp_path / ".kong/runs"), memory_bridge=bridge)
@@ -233,7 +254,8 @@ def test_corrupt_relationship_degrades_entire_personalized_context(tmp_path):
     with sqlite3.connect(database) as db:
         db.execute("UPDATE relationship_versions SET content='corrupt json'")
     async def scenario():
-        async with MemoryBridge(database, auth) as bridge:
+        async with MemoryBridge(database, auth, timeout=5) as bridge:
+            await bridge.get_access_state()
             workspace = Workspace(tmp_path)
             model = ContextReader()
             run = Runtime.new("ordinary task", model, workspace, default_registry(workspace), store=RunStore(tmp_path / ".kong/runs"), memory_bridge=bridge)
